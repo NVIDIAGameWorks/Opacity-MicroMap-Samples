@@ -286,6 +286,26 @@ void Sample::PrepareFrame(uint32_t frameIndex)
             ImGui::PlotLines("", m_FrameTimes.data(), N, head, buf, lo, hi, ImVec2(0.0f, 70.0f));
             ImGui::PopStyleColor();
 
+            ImGui::PushID("Profiler0");
+            {
+                ImGui::Separator();
+                ImGui::BeginTable("", 2, ImGuiTabBarFlags_::ImGuiTabBarFlags_None);
+                size_t eventsCount = 0;
+                const ProfilerEvent* events = m_Profiler.GetPerformanceEvents(eventsCount);
+                for (size_t i = 0; i < eventsCount; ++i)
+                {
+                    ImGui::TableNextRow();
+                    ImGui::TableNextColumn();
+                    ImGui::Text(events[i].name.c_str());
+                    ImGui::TableNextColumn();
+                    ImGui::Text("%6.3f(ms)", events[i].GetSmootherDelta());
+                }
+                ImGui::EndTable();
+                ImGui::Separator();
+            }
+            ImGui::PopID();
+            m_UiWidth = ImGui::GetWindowWidth();
+
             if (IsButtonPressed(Button::Right))
             {
                 ImGui::Text("Move - W/S/A/D");

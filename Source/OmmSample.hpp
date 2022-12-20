@@ -456,7 +456,7 @@ struct Settings
     int32_t     denoiser                           = REBLUR;
     int32_t     rpp                                = 1;
     int32_t     bounceNum                          = 1;
-    int32_t     tracingMode                        = RESOLUTION_HALF;
+    int32_t     tracingMode                        = RESOLUTION_FULL;
     int32_t     mvType                             = MV_25D;
 
     bool        cameraJitter                       = true;

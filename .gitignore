@@ -1,0 +1,70 @@
+# cmake
+CMakeFiles/
+.cmake/
+*.dir/
+*.tlog/
+CMakeCache.txt
+cmake_install.cmake
+*.recipe
+
+# make
+Makefile
+
+# VS
+*.vcxproj*
+*.sln
+.vs/
+*.args.json
+*.manifest
+
+# VS Code
+.vscode/
+
+# shaders
+*.dxbc
+*.dxil
+*.spirv
+*.dxbc.h
+*.dxil.h
+*.spirv.h
+
+# ninja
+.ninja_deps
+.ninja_log
+build.ninja
+compile_commands.json
+*.log
+*.ninja
+
+# library
+*.lib
+*.exp
+*.dll
+*.ilk
+*.pdb
+*.so
+*.so.*
+*.manifest
+
+# external packages
+External/Assimp/
+External/Detex/
+External/Glfw/
+External/ImGui/
+External/vulkansdk/
+External/DXC/
+External/NVAPI/
+
+# generated folders
+_Build/
+_Compiler/
+_Data/
+_Shaders/
+_NRD_SDK/
+_NRI_SDK/
+_OmmCache/
+
+# can be a symbolic link
+_Data
+
+!External/NVAPI/*

@@ -97,7 +97,7 @@ option(NRD_DISABLE_SHADER_COMPILATION "" ${DISABLE_SHADER_COMPILATION})
 add_subdirectory("External/NRD")
 
 # NVAPI
-find_library(INPUT_NVAPI_LIB NAMES nvapi64.lib PATHS "External/NVAPI")
+find_library(INPUT_NVAPI_LIB NAMES nvapi64.lib PATHS "External/NVAPI/amd64")
 
 # Opacity Micro-Maps
 set(OMM_PROJECT_FOLDER "External/omm_bake")

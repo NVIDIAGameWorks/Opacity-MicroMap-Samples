@@ -1,7 +1,7 @@
 # OMM Sample
 
 *OMM sample* demostrates usage of Opacity Micro Maps in Raytracing. Sample details:
-- omm_sdk is used for OMM baking. Both CPU baker and GPU baker are supported in the sample: *todo: add_link*
+- omm_sdk is used for OMM baking. Both CPU baker and GPU baker are supported in the sample: https://github.com/NVIDIAGameWorks/Opacity-MicroMap-SDK
 - Rendering and Denoising are based on NRDSample: https://github.com/NVIDIAGameWorks/NRDSample
 
 ## Build instructions

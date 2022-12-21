@@ -1,7 +1,7 @@
 # OMM Sample
 
-*OMM sample* demostrates usage of Opacity Micro Maps in Raytracing. Sample details:
-- omm_sdk is used for OMM baking. Both CPU baker and GPU baker are supported in the sample: https://github.com/NVIDIAGameWorks/Opacity-MicroMap-SDK
+*Opacity Micro-Map sample* demostrates usage of Opacity Micro-Maps in Raytracing. Sample details:
+- Opacity Micro-Map SDK is used for OMM baking. Both CPU baker and GPU baker are supported in the sample: https://github.com/NVIDIAGameWorks/Opacity-MicroMap-SDK
 - Rendering and Denoising are based on NRDSample: https://github.com/NVIDIAGameWorks/NRDSample
 
 ## Build instructions
@@ -9,8 +9,6 @@
 - Install [*Cmake*](https://cmake.org/download/) 3.15+
 - Install on
     - Windows: latest *WindowsSDK* (22000+), *VulkanSDK* (1.3.231+)
-    - Linux (x86-64): *VulkanSDK*, *libx11-dev*, *libxrandr-dev*, *libwayland-dev*
-    - Linux (aarch64): find a precompiled binary for [*DXC*](https://github.com/microsoft/DirectXShaderCompiler), *libx11-dev*, *libxrandr-dev*, *libwayland-dev*
 - Build (variant 1) - using *Git* and *CMake* explicitly
     - Clone project and init submodules
     - Generate and build project using *CMake*
@@ -20,7 +18,7 @@
 
 ### CMake options
 
-- `USE_MINIMAL_DATA=ON` - download minimal resource package (90MB)
+- `USE_MINIMAL_DATA=ON` - download minimal resource package (90MB) - set ShaderBalls.obj scene via cmdargs
 - `DISABLE_SHADER_COMPILATION=ON` - disable compilation of shaders (shaders can be built on other platform)
 - `DXC_CUSTOM_PATH=custom/path/to/dxc` - custom path to *DXC* (will be used if VulkanSDK is not found)
 - `USE_DXC_FROM_PACKMAN_ON_AARCH64=OFF` - use default path for *DXC*
@@ -33,32 +31,29 @@
 
 ## Minimum Requirements
 
-Any Ray Tracing compatible GPU:
+Any RTX GPU:
 - RTX 4000 series
 - RTX 3000 series
 - RTX 2000 series
 
 ## Usage
 
+OMM:
+- Set baker settings in the UI and press Bake OMMs
+- For CPU baker it is recommended to use cache
+
 Navigation:
 - Right mouse button + W/S/A/D - move camera
 - Mouse scroll - accelerate / decelerate
 - F1 - toggle "gDebug" (can be useful for debugging and experiments)
-- F2 - go to next test (only if *TESTS* section is unfolded)
-- F3 - toggle emission
 - Tab - UI toggle
 - Space - animation toggle
-- PgUp/PgDown - switch between denoisers
-
-OMM:
-- Set baker settings in the UI and press Bake OMMs
-- For CPU baker it is recommended to use cache
 
 Notes:
 - Check "Show all settings" in the UI to see rendering setting.
 
 ## OMM Workflow
 
-1. Bake OMM data with omm_sdk
+1. Bake OMM data with Opacity Micro-Map SDK
 2. Use OMM data to build OMM with corresponding API functions
 3. Build BLAS using OMM

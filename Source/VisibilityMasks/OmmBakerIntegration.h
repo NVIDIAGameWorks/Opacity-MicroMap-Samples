@@ -227,6 +227,7 @@ private:
     //resources
     BufferResource m_StaticBuffers[(uint32_t)GpuStaticResources::Count];
     std::map<uint64_t, nri::Descriptor*> m_NriDescriptors;
+    std::map<uint64_t, nri::DescriptorSet*> m_NriDescriptorSets;
     std::vector<nri::Memory*> m_NriStaticMemories;
     std::vector<nri::DescriptorPool*> m_NriDescriptorPools;
 

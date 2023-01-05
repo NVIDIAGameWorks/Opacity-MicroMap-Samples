@@ -382,7 +382,7 @@ namespace ommhelper
 
         settings.samplerAddressingMode = desc.texture.addressingMode;
         settings.samplerFilterMode = bakeDesc.filter == OmmBakeFilter::Linear ? nri::Filter::LINEAR : nri::Filter::NEAREST;
-        settings.maxScratchMemorySize = BakerScratchMemoryBudget::MB_1024;
+        settings.maxScratchMemorySize = BakerScratchMemoryBudget::MB_512;
 
         settings.dynamicSubdivisionScale = bakeDesc.dynamicSubdivisionScale;
         settings.bakeFlags = GetGpuBakeFlags(bakeDesc);

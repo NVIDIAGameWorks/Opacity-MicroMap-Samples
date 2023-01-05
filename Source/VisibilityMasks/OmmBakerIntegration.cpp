@@ -673,6 +673,16 @@ void OmmBakerGpuIntegration::UpdateGlobalConstantBuffer()
     }
 }
 
+inline uint64_t ComputeHash(const void* key, uint32_t len, uint32_t geometryId)
+{
+    const uint8_t* p = (uint8_t*)key;
+    uint64_t result = 14695981039346656037ull - geometryId;
+    while (len--)
+        result = (result ^ (*p++)) * 1099511628211ull;
+
+    return result;
+}
+
 void OmmBakerGpuIntegration::UpdateDescriptorPool(uint32_t geometryId, const omm::Gpu::BakeDispatchChain* dispatchChain)
 {
     nri::DescriptorPool*& desctriptorPool = m_NriDescriptorPools[geometryId];
@@ -681,6 +691,7 @@ void OmmBakerGpuIntegration::UpdateDescriptorPool(uint32_t geometryId, const omm
 
     nri::DescriptorPoolDesc desc = {};
     uint32_t dispatchNum = 0;
+    uint32_t uniqueDescriptorSetNum = 0;
     for (uint32_t i = 0; i < dispatchChain->numDispatches; ++i)
     {//filter out labling events
         switch (dispatchChain->dispatches[i].type)
@@ -689,16 +700,24 @@ void OmmBakerGpuIntegration::UpdateDescriptorPool(uint32_t geometryId, const omm
         case omm::Gpu::DispatchType::EndLabel: break;
         default: 
         {
-            for (uint32_t j = 0; j < dispatchChain->dispatches[i].compute.resourceNum; ++j)
+            uint64_t hash = ComputeHash(dispatchChain->dispatches[i].compute.resources, dispatchChain->dispatches[i].compute.resourceNum * sizeof(omm::Gpu::Resource), geometryId);
+            const auto& it = m_NriDescriptorSets.find(hash);
+            if (it == m_NriDescriptorSets.end())
             {
-                const omm::Gpu::Resource& resource = dispatchChain->dispatches[i].compute.resources[j];
-                switch (resource.stateNeeded)
+                m_NriDescriptorSets.insert(std::make_pair(hash, nullptr));
+                ++uniqueDescriptorSetNum;
+
+                for (uint32_t j = 0; j < dispatchChain->dispatches[i].compute.resourceNum; ++j)
                 {
-                case omm::Gpu::DescriptorType::TextureRead: ++desc.textureMaxNum;
-                case omm::Gpu::DescriptorType::BufferRead: ++desc.bufferMaxNum;
-                case omm::Gpu::DescriptorType::RawBufferRead: ++desc.structuredBufferMaxNum;
-                case omm::Gpu::DescriptorType::RawBufferWrite: ++desc.storageStructuredBufferMaxNum;
-                default: break;
+                    const omm::Gpu::Resource& resource = dispatchChain->dispatches[i].compute.resources[j];
+                    switch (resource.stateNeeded)
+                    {
+                    case omm::Gpu::DescriptorType::TextureRead: ++desc.textureMaxNum; break;
+                    case omm::Gpu::DescriptorType::BufferRead: ++desc.bufferMaxNum; break;
+                    case omm::Gpu::DescriptorType::RawBufferRead: ++desc.structuredBufferMaxNum; break;
+                    case omm::Gpu::DescriptorType::RawBufferWrite: ++desc.storageStructuredBufferMaxNum; break;
+                    default: break;
+                    }
                 }
             }
             ++dispatchNum;
@@ -706,9 +725,9 @@ void OmmBakerGpuIntegration::UpdateDescriptorPool(uint32_t geometryId, const omm
         }
     }
 
-    desc.descriptorSetMaxNum = dispatchNum;
+    desc.descriptorSetMaxNum = uniqueDescriptorSetNum;
     desc.dynamicConstantBufferMaxNum = dispatchNum;
-    desc.samplerMaxNum = dispatchNum * (uint32_t)m_Samplers.size();
+    desc.samplerMaxNum = uniqueDescriptorSetNum * (uint32_t)m_Samplers.size();
     NRI_ABORT_ON_FAILURE(NRI.CreateDescriptorPool(*m_Device, desc, desctriptorPool));
 }
 
@@ -823,9 +842,17 @@ nri::DescriptorSet* OmmBakerGpuIntegration::PrepareDispatch(nri::CommandBuffer& 
     NRI.CmdSetPipelineLayout(commandBuffer, *pipelineLayout);
 
     // Descriptor set
+    uint64_t hash = ComputeHash(resources, resourceNum * sizeof(omm::Gpu::Resource), geometryId);
+    const auto& it = m_NriDescriptorSets.find(hash);
     nri::DescriptorSet* descriptorSet = nullptr;
-    NRI_ABORT_ON_FAILURE(NRI.AllocateDescriptorSets(*m_NriDescriptorPools[geometryId], *pipelineLayout, 0, &descriptorSet, 1, nri::WHOLE_DEVICE_GROUP, 0));
-    NRI.UpdateDescriptorRanges(*descriptorSet, nri::WHOLE_DEVICE_GROUP, 0, (uint32_t)rangeUpdateDescs.size(), rangeUpdateDescs.data());
+    if (it->second == nullptr)
+    {
+        NRI_ABORT_ON_FAILURE(NRI.AllocateDescriptorSets(*m_NriDescriptorPools[geometryId], *pipelineLayout, 0, &descriptorSet, 1, nri::WHOLE_DEVICE_GROUP, 0));
+        it->second = descriptorSet;
+        NRI.UpdateDescriptorRanges(*descriptorSet, nri::WHOLE_DEVICE_GROUP, 0, (uint32_t)rangeUpdateDescs.size(), rangeUpdateDescs.data());
+    }
+    else
+        descriptorSet = it->second;
 
     NRI.UpdateDynamicConstantBuffers(*descriptorSet, nri::WHOLE_DEVICE_GROUP, 0, 1, &m_ConstantBufferView);
     NRI.CmdSetPipeline(commandBuffer, *m_NriPipelines[pipelineIndex]);
@@ -1024,6 +1051,7 @@ void OmmBakerGpuIntegration::ReleaseTemporalResources()
 {
     m_GeometryQueue.resize(0);
     m_GeometryQueue.shrink_to_fit();
+    m_NriDescriptorSets.clear();
 
     for (auto it = m_NriDescriptors.begin(); it != m_NriDescriptors.end(); )
     {

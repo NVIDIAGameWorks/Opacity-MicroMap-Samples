@@ -40,8 +40,8 @@ namespace ommhelper
 
     enum class OmmBakeFilter
     {
-        Nearest = (uint32_t)omm::TextureFilterMode::Nearest,
-        Linear = (uint32_t)omm::TextureFilterMode::Linear,
+        Nearest = (uint32_t)ommTextureFilterMode_Nearest,
+        Linear = (uint32_t)ommTextureFilterMode_Linear,
         Count,
     };
         
@@ -74,8 +74,9 @@ namespace ommhelper
     {
         uint32_t subdivisionLevel = 9;// 4^N
         uint32_t mipBias = 0;
+        uint32_t mipCount = 1;
         uint32_t buildFrameId = 0;
-        float dynamicSubdivisionScale = 2.0f;
+        float dynamicSubdivisionScale = 1.0f;
         OmmBakeFilter filter = OmmBakeFilter::Linear;
         OmmFormats format = OmmFormats::OC1_4_STATE;
         OmmBakerType type = OmmBakerType::GPU;
@@ -86,11 +87,18 @@ namespace ommhelper
         bool enableCache = false;
     };
 
+    enum class OmmGpuBakerPass
+    {
+        Setup = ommGpuBakeFlags_PerformSetup,
+        Bake = ommGpuBakeFlags_PerformBake,
+        Combined = Setup | Bake,
+    };
+
     enum class OmmAlphaMode
     {
-        Test = (uint32_t)omm::AlphaMode::Test,
-        Blend = (uint32_t)omm::AlphaMode::Blend,
-        MaxNum = (uint32_t)omm::AlphaMode::MAX_NUM,
+        Test = (uint32_t)ommAlphaMode_Test,
+        Blend = (uint32_t)ommAlphaMode_Blend,
+        MaxNum = (uint32_t)ommAlphaMode_MAX_NUM,
     };
 
     enum class OmmDataLayout
@@ -131,7 +139,9 @@ namespace ommhelper
         nri::Format format;
     };
 
-    struct InputTexture
+#define OMM_MAX_MIP_NUM 16
+
+    struct MipDesc
     {
         union NriTextureOrPtr
         {
@@ -139,9 +149,18 @@ namespace ommhelper
             void* ptr;
         } nriTextureOrPtr;
 
-        uint32_t width;
-        uint32_t height;
+        uint32_t    width;
+        uint32_t    height;
+        uint32_t    rowPitch;
+    };
+
+    struct InputTexture
+    {
+        MipDesc mips[OMM_MAX_MIP_NUM];
+
         uint32_t mipOffset;
+        uint32_t mipNum;
+
         uint32_t alphaChannelId;
         nri::Format format;
         nri::AddressMode addressingMode;
@@ -154,7 +173,7 @@ namespace ommhelper
         InputTexture texture;
 
         GpuBakerBuffer gpuBuffers[uint32_t(OmmDataLayout::GpuOutputNum)];
-        GpuBakerBuffer transientBuffers[omm::Gpu::PreBakeInfo::MAX_TRANSIENT_POOL_BUFFERS];
+        GpuBakerBuffer transientBuffers[OMM_SDK_TRANSIENT_BUFFER_MAX_NUM];
         GpuBakerBuffer readBackBuffers[uint32_t(OmmDataLayout::GpuOutputNum)];
 
         std::vector<uint8_t> outData[uint32_t(OmmDataLayout::MaxNum)]; //cpu baker outputs/gpu baker readback for caching
@@ -162,7 +181,7 @@ namespace ommhelper
         struct GpuBakerPrebuildInfo
         {
             uint64_t dataSizes[(uint32_t)OmmDataLayout::GpuOutputNum];
-            uint64_t transientBufferSizes[omm::Gpu::PreBakeInfo::MAX_TRANSIENT_POOL_BUFFERS];
+            uint64_t transientBufferSizes[OMM_SDK_TRANSIENT_BUFFER_MAX_NUM];
         } gpuBakerPreBuildInfo;
 
         float alphaCutoff;
@@ -210,8 +229,8 @@ namespace ommhelper
     {
         struct MaskHeader
         {
-            uint64_t hash;
-            uint64_t stateMask;
+            uint64_t instanceHash;
+            uint64_t stateHash;
             uint64_t sizes[(uint32_t)OmmDataLayout::CpuMaxNum];
             uint64_t blobSize;
             uint16_t ommIndexFormat;
@@ -221,13 +240,13 @@ namespace ommhelper
             void* data[(uint32_t)OmmDataLayout::CpuMaxNum];
             uint64_t sizes[(uint32_t)OmmDataLayout::CpuMaxNum];
         };
-        static uint64_t PackStateMask(const OmmBakeDesc& buildDesc);
+        static uint64_t CalculateSateHash(const OmmBakeDesc& buildDesc);
+        static bool LookForCache(const char* filename, uint64_t stateMask, uint64_t hash, size_t* dataOffset = nullptr);
         static bool ReadMaskFromCache(const char* filename, OmmData& data, uint64_t stateMask, uint64_t hash, uint16_t* ommIndexFormat);
         static void SaveMasksToDisc(const char* filename, const OmmData& data, uint64_t stateMask, uint64_t hash, uint32_t ommIndexFormat);
         static void CreateFolder(const char* path);
     private:
         static void PrewarmCache(const char* filename, FILE* file, size_t fileSize);
-        static bool LookForCache(const char* filename, uint64_t stateMask, uint64_t hash, size_t* dataOffset = nullptr);
         static bool WriteChunkToFile(const char* fileName, FILE* file, void* data, size_t size);
         static bool ValidateChunkRead(const char* fileName, FILE* file, size_t fileSize, size_t currentPos, size_t dataSize);
         static bool ReadChunkFromFile(const char* fileName, FILE* file, size_t fileSize, void* data, size_t dataSize);
@@ -239,15 +258,15 @@ namespace ommhelper
     public:
         void Initialize(nri::Device* device);
 
-        void GetGpuBakerPrebuildInfo(OmmBakeGeometryDesc* queue, const size_t count, const OmmBakeDesc& desc);
-        void BakeOpacityMicroMapsGpu(nri::CommandBuffer* commandBuffer, OmmBakeGeometryDesc* queue, const size_t count, const OmmBakeDesc& bakeDesc);
+        void GetGpuBakerPrebuildInfo(OmmBakeGeometryDesc** queue, const size_t count, const OmmBakeDesc& desc);
+        void BakeOpacityMicroMapsGpu(nri::CommandBuffer* commandBuffer, OmmBakeGeometryDesc** queue, const size_t count, const OmmBakeDesc& bakeDesc, OmmGpuBakerPass pass);
         void GpuPostBakeCleanUp();
 
-        void BakeOpacityMicroMapsCpu(OmmBakeGeometryDesc* queue, const size_t count, const OmmBakeDesc& desc);
+        void BakeOpacityMicroMapsCpu(OmmBakeGeometryDesc** queue, const size_t count, const OmmBakeDesc& desc);
         void ConvertUsageCountsToApiFormat(uint8_t* outFormattedBuffer, size_t& outSize, const uint8_t* bakerOutputBuffer, size_t bakerOutputBufferSize);
 
-        void GetBlasPrebuildInfo(MaskedGeometryBuildDesc* queue, const size_t count);
-        void BuildMaskedGeometry(MaskedGeometryBuildDesc* queue, const size_t count, nri::CommandBuffer* commandBuffer);
+        void GetBlasPrebuildInfo(MaskedGeometryBuildDesc** queue, const size_t count);
+        void BuildMaskedGeometry(MaskedGeometryBuildDesc** queue, const size_t count, nri::CommandBuffer* commandBuffer);
         void DestroyMaskedGeometry(nri::AccelerationStructure* blas, nri::Buffer* ommArray);
         void ReleaseGeometryMemory();
 
@@ -256,11 +275,11 @@ namespace ommhelper
     private:
         //D3D12:
         void InitializeD3D12();
-        void GetPreBuildInfoD3D12(MaskedGeometryBuildDesc* queue, const size_t count);
+        void GetPreBuildInfoD3D12(MaskedGeometryBuildDesc** queue, const size_t count);
         void BindResourceToMemoryD3D12(ID3D12Resource*& resource, size_t size);
-        void AllocateMemoryD3D12();
+        void AllocateMemoryD3D12(uint64_t size);
         void ReleaseMemoryD3D12();
-        void BuildMaskedGeometryD3D12(MaskedGeometryBuildDesc* queue, const size_t count, nri::CommandBuffer* commandBuffer);
+        void BuildMaskedGeometryD3D12(MaskedGeometryBuildDesc** queue, const size_t count, nri::CommandBuffer* commandBuffer);
         void BuildOmmArrayD3D12(MaskedGeometryBuildDesc& desc, nri::CommandBuffer* commandBuffer);
         void BuildBlasD3D12(MaskedGeometryBuildDesc& desc, nri::CommandBuffer* commandBuffer);
         ID3D12Device5* GetD3D12Device5();
@@ -268,12 +287,12 @@ namespace ommhelper
 
         //VK:
         void InitializeVK();
-        void AllocateMemoryVK();
+        void AllocateMemoryVK(uint64_t size);
         void ReleaseMemoryVK();
-        void GetPreBuildInfoVK(MaskedGeometryBuildDesc* queue, const size_t count);
+        void GetPreBuildInfoVK(MaskedGeometryBuildDesc** queue, const size_t count);
         void BindOmmToMemoryVK(VkMicromapEXT& ommArray, size_t size);
         void BindBlasToMemoryVK(VkAccelerationStructureKHR& blas, size_t size);
-        void BuildMaskedGeometryVK(MaskedGeometryBuildDesc* queue, const size_t count, nri::CommandBuffer* commandBuffer);
+        void BuildMaskedGeometryVK(MaskedGeometryBuildDesc** queue, const size_t count, nri::CommandBuffer* commandBuffer);
         void BuildOmmArrayVK(MaskedGeometryBuildDesc& desc, nri::CommandBuffer* commandBuffer);
         void BuildBlasVK(MaskedGeometryBuildDesc& desc, nri::CommandBuffer* commandBuffer);
         void DestroyOmmArrayVK(nri::Buffer* ommArray);
@@ -282,7 +301,7 @@ namespace ommhelper
     private:
         //internal memory for masked geometry
         //TODO: when micromaps are supported in NRI, move memory managment to the sample main part
-        const uint64_t m_HeapSize = 100 * 1024 * 1024;
+        const uint64_t m_DefaultHeapSize = 100 * 1024 * 1024;
         const uint64_t m_SctrachSize = 10 * 1024 * 1024;
         uint64_t m_CurrentHeapOffset;
 
@@ -307,7 +326,7 @@ namespace ommhelper
         NriInterface NRI = {};
 
         OmmBakerGpuIntegration m_GpuBakerIntegration;
-        omm::Baker m_OmmCpuBaker = 0;
+        ommBaker m_OmmCpuBaker = 0;
         nri::Device* m_Device;
     };
 }

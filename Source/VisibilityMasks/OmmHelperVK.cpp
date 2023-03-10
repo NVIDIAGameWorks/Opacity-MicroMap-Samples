@@ -105,7 +105,7 @@ namespace ommhelper
         {//create a buffer with properties required to store ommArrays, blases and scratch buffer to query memory type for future allocations
             VkBufferCreateInfo bufferDesc = { VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
             bufferDesc.pNext = NULL;
-            bufferDesc.size = m_HeapSize;
+            bufferDesc.size = m_DefaultHeapSize;
             bufferDesc.flags = 0;
             bufferDesc.usage = VK_BUFFER_USAGE_MICROMAP_STORAGE_BIT_EXT | VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT;
 
@@ -160,12 +160,13 @@ namespace ommhelper
         m_CurrentHeapOffset = 0;
     }
 
-    void OpacityMicroMapsHelper::AllocateMemoryVK()
+    void OpacityMicroMapsHelper::AllocateMemoryVK(uint64_t size)
     {
         m_CurrentHeapOffset = 0;
         VkDeviceMemory& newMemory = m_VkMemories.emplace_back();
 
-        uint64_t allocationSize = (m_VkScrathBuffer == NULL) ? m_HeapSize + m_SctrachSize : m_HeapSize; //make the initial heap bigger to store the scratch resource
+        uint64_t allocationSize = (size > m_DefaultHeapSize) ? size : m_DefaultHeapSize; //make the initial heap bigger to store the scratch resource
+        allocationSize = (m_VkScrathBuffer == NULL) ? allocationSize + m_SctrachSize : allocationSize; //make the initial heap bigger to store the scratch resource
 
         VkMemoryAllocateFlagsInfo flagsInfo = { VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_FLAGS_INFO };
         flagsInfo.flags = VK_MEMORY_ALLOCATE_DEVICE_MASK_BIT | VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT;
@@ -175,7 +176,7 @@ namespace ommhelper
         allocInfo.memoryTypeIndex = m_VkMemoryTypeId;
         allocInfo.pNext = &flagsInfo;
 
-        for (uint32_t i = 0; i < NRI.GetDeviceDesc(*m_Device).phyiscalDeviceGroupSize; ++i)
+        for (uint32_t i = 0; i < NRI.GetDeviceDesc(*m_Device).physicalDeviceNum; ++i)
         {
             flagsInfo.deviceMask = 1 << i;
             VK_CALL(VK.AllocateMemory(GetVkDevice(), &allocInfo, nullptr, &newMemory));
@@ -189,12 +190,12 @@ namespace ommhelper
             scratchDesc.flags = 0;
             scratchDesc.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
             VK_CALL(VK.CreateBuffer(GetVkDevice(), &scratchDesc, nullptr, &m_VkScrathBuffer));
-            VK_CALL(VK.BindBufferMemory(GetVkDevice(), m_VkScrathBuffer, newMemory, m_HeapSize));
+            VK_CALL(VK.BindBufferMemory(GetVkDevice(), m_VkScrathBuffer, newMemory, m_DefaultHeapSize));
         }
 
         VkBufferCreateInfo bufferDesc = { VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
         bufferDesc.pNext = NULL;
-        bufferDesc.size = m_HeapSize;
+        bufferDesc.size = m_DefaultHeapSize;
         bufferDesc.flags = 0;
         bufferDesc.usage = VK_BUFFER_USAGE_MICROMAP_STORAGE_BIT_EXT | VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
 
@@ -273,13 +274,16 @@ namespace ommhelper
         return blasDesc;
     }
 
-    void OpacityMicroMapsHelper::GetPreBuildInfoVK(MaskedGeometryBuildDesc* queue, const size_t count)
+    void OpacityMicroMapsHelper::GetPreBuildInfoVK(MaskedGeometryBuildDesc** queue, const size_t count)
     {
+        if (count == 0)
+            return;
+
         uint64_t maxMicromapSize = 0;
         uint64_t maxScratchSize = 0;
         for (size_t i = 0; i < count; ++i)
         {
-            MaskedGeometryBuildDesc& desc = queue[i];
+            MaskedGeometryBuildDesc& desc = *queue[i];
             const MaskedGeometryBuildDesc::Inputs& inputs = desc.inputs;
             { // Get OMM array prebuid info
                 VkMicromapBuildInfoEXT buildDesc = FillMicromapBuildInfo(inputs, NULL, NULL, NULL, NULL);
@@ -305,7 +309,7 @@ namespace ommhelper
             allocInfo.allocationSize = allocationSize;
             allocInfo.memoryTypeIndex = m_VkMemoryTypeId;
             allocInfo.pNext = &flagsInfo;
-            for (uint32_t i = 0; i < NRI.GetDeviceDesc(*m_Device).phyiscalDeviceGroupSize; ++i)
+            for (uint32_t i = 0; i < NRI.GetDeviceDesc(*m_Device).physicalDeviceNum; ++i)
             {
                 flagsInfo.deviceMask = 1 << i;
                 VK_CALL(VK.AllocateMemory(GetVkDevice(), &allocInfo, nullptr, &tmpMemory));
@@ -324,7 +328,7 @@ namespace ommhelper
 
         for (size_t i = 0; i < count; ++i)
         { // Get BLAS prebuild info
-            MaskedGeometryBuildDesc& desc = queue[i];
+            MaskedGeometryBuildDesc& desc = *queue[i];
             const MaskedGeometryBuildDesc::Inputs& inputs = desc.inputs;
             const GpuBakerBuffer* buffers = inputs.buffers;
             {
@@ -393,8 +397,8 @@ namespace ommhelper
 
     void OpacityMicroMapsHelper::BindOmmToMemoryVK(VkMicromapEXT& ommArray, size_t size)
     {
-        if (m_VkMemories.empty() || m_CurrentHeapOffset + size > m_HeapSize)
-            AllocateMemoryVK();
+        if (m_VkMemories.empty() || m_CurrentHeapOffset + size > m_DefaultHeapSize)
+            AllocateMemoryVK(size);
 
         VkBuffer& currentBuffer = m_VkBuffers.back();
 
@@ -448,8 +452,8 @@ namespace ommhelper
 
     void OpacityMicroMapsHelper::BindBlasToMemoryVK(VkAccelerationStructureKHR& blas, size_t size)
     {
-        if (m_VkMemories.empty() || m_CurrentHeapOffset + size > m_HeapSize)
-            AllocateMemoryVK();
+        if (m_VkMemories.empty() || m_CurrentHeapOffset + size > m_DefaultHeapSize)
+            AllocateMemoryVK(size);
 
         VkBuffer& currentBuffer = m_VkBuffers.back();
         VkAccelerationStructureCreateInfoKHR blasDesc = { VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_CREATE_INFO_KHR };
@@ -512,14 +516,14 @@ namespace ommhelper
         NRI.CreateAccelerationStructureVK(*m_Device, wrapperDesc, desc.outputs.blas);
     }
 
-    void OpacityMicroMapsHelper::BuildMaskedGeometryVK(MaskedGeometryBuildDesc* queue, const size_t count, nri::CommandBuffer* commandBuffer)
+    void OpacityMicroMapsHelper::BuildMaskedGeometryVK(MaskedGeometryBuildDesc** queue, const size_t count, nri::CommandBuffer* commandBuffer)
     {
         GetPreBuildInfoVK(queue, count);
 
         for (size_t i = 0; i < count; ++i)
         { // Build omm then blas to increase memory locality
-            BuildOmmArrayVK(queue[i], commandBuffer);
-            BuildBlasVK(queue[i], commandBuffer);
+            BuildOmmArrayVK(*queue[i], commandBuffer);
+            BuildBlasVK(*queue[i], commandBuffer);
         }
     }
 }

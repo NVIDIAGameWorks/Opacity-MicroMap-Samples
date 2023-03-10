@@ -169,7 +169,7 @@ namespace ommhelper
         m_CurrentHeapOffset = 0;
     }
 
-    void OpacityMicroMapsHelper::AllocateMemoryD3D12()
+    void OpacityMicroMapsHelper::AllocateMemoryD3D12(uint64_t size)
     {
         m_D3D12GeometryHeaps.reserve(16);
         ID3D12Device5* device = GetD3D12Device5();
@@ -177,7 +177,8 @@ namespace ommhelper
         D3D12_HEAP_DESC desc = {};
         desc.Properties.CPUPageProperty = D3D12_CPU_PAGE_PROPERTY_UNKNOWN;
         desc.Properties.Type = D3D12_HEAP_TYPE_DEFAULT;
-        desc.SizeInBytes = m_HeapSize;
+        desc.SizeInBytes = size > m_DefaultHeapSize ? size : m_DefaultHeapSize;
+        desc.SizeInBytes = m_D3D12ScratchBuffer ? desc.SizeInBytes : desc.SizeInBytes + m_SctrachSize;
         device->CreateHeap(&desc, IID_PPV_ARGS(&newHeap));
         m_CurrentHeapOffset = 0;
 
@@ -191,20 +192,20 @@ namespace ommhelper
 
     void OpacityMicroMapsHelper::BindResourceToMemoryD3D12(ID3D12Resource*& resource, size_t size)
     {
-        if (m_D3D12GeometryHeaps.empty() || (m_CurrentHeapOffset + size) > m_HeapSize)
-            AllocateMemoryD3D12();
-        
+        if (m_D3D12GeometryHeaps.empty() || (m_CurrentHeapOffset + size) > m_DefaultHeapSize)
+            AllocateMemoryD3D12(size);
+
         ID3D12Heap* heap = m_D3D12GeometryHeaps.back();
         D3D12_RESOURCE_DESC resourceDesc = InitBufferResourceDesc(size, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
         GetD3D12Device5()->CreatePlacedResource(heap, m_CurrentHeapOffset, &resourceDesc, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, nullptr, IID_PPV_ARGS(&resource));
         m_CurrentHeapOffset += Align(size);
     }
 
-    void OpacityMicroMapsHelper::GetPreBuildInfoD3D12(MaskedGeometryBuildDesc* queue, const size_t count)
+    void OpacityMicroMapsHelper::GetPreBuildInfoD3D12(MaskedGeometryBuildDesc** queue, const size_t count)
     {
         for (size_t i = 0; i < count; ++i)
         {
-            MaskedGeometryBuildDesc& desc = queue[i];
+            MaskedGeometryBuildDesc& desc = *queue[i];
             {// get omm prebuild info
                 NVAPI_D3D12_BUILD_RAYTRACING_OPACITY_MICROMAP_ARRAY_INPUTS vmInput = FillOmmArrayInputsDesc(desc.inputs, NULL, NULL);
                 NVAPI_D3D12_RAYTRACING_OPACITY_MICROMAP_ARRAY_PREBUILD_INFO ommPrebuildInfo = {};
@@ -336,14 +337,14 @@ namespace ommhelper
         blas->Release();//dereference the resource to ensure it's destruction via NRI
     }
 
-    void OpacityMicroMapsHelper::BuildMaskedGeometryD3D12(MaskedGeometryBuildDesc* queue, const size_t count, nri::CommandBuffer* commandBuffer)
+    void OpacityMicroMapsHelper::BuildMaskedGeometryD3D12(MaskedGeometryBuildDesc** queue, const size_t count, nri::CommandBuffer* commandBuffer)
     {
         GetPreBuildInfoD3D12(queue, count);
 
         for (size_t i = 0; i < count; ++i)
         {//build omm then blas to increase memory locality
-            BuildOmmArrayD3D12(queue[i], commandBuffer);
-            BuildBlasD3D12(queue[i], commandBuffer);
+            BuildOmmArrayD3D12(*queue[i], commandBuffer);
+            BuildBlasD3D12(*queue[i], commandBuffer);
         }
     }
 }

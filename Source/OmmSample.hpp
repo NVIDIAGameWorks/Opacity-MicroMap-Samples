@@ -10,8 +10,8 @@ license agreement from NVIDIA CORPORATION is strictly prohibited.
 
 #include <set>
 #include <map>
-
 #include "VisibilityMasks/OmmHelper.h"
+
 #include "NRIFramework.h"
 
 #include "Extensions/NRIRayTracing.h"
@@ -572,6 +572,9 @@ struct InstanceData
 
 struct AlphaTestedGeometry
 {
+    ommhelper::OmmBakeGeometryDesc bakeDesc;
+    ommhelper::MaskedGeometryBuildDesc buildDesc;
+
     nri::Buffer* positions;
     nri::Buffer* uvs;
     nri::Buffer* indices;
@@ -599,11 +602,10 @@ struct AlphaTestedGeometry
 
 struct OmmGpuBakerPrebuildMemoryStats
 {
-    size_t maximum;
     size_t total;
-
     size_t outputMaxSizes[(uint32_t)ommhelper::OmmDataLayout::GpuOutputNum];
-    size_t maxTransientBufferSizes[omm::Gpu::PreBakeInfo::MAX_TRANSIENT_POOL_BUFFERS];
+    size_t outputTotalSizes[(uint32_t)ommhelper::OmmDataLayout::GpuOutputNum];
+    size_t maxTransientBufferSizes[OMM_SDK_TRANSIENT_BUFFER_MAX_NUM];
 };
 
 struct OmmBatch
@@ -776,21 +778,22 @@ private: //OMM:
     void InitAlphaTestedGeometry();
     void RebuildOmmGeometry();
 
-    void FillOmmBakerInputs(std::vector<ommhelper::OmmBakeGeometryDesc>& ommBakeQueue);
-    void FillOmmBlasBuildInputs(size_t start, size_t count);
+    void FillOmmBakerInputs();
+    void FillOmmBlasBuildQueue(const OmmBatch& batch, std::vector<ommhelper::MaskedGeometryBuildDesc*>& outBuildQueue);
 
-    void BakeOmmCpu(size_t* queue, size_t count);
-    void BakeOmmGpu(size_t* queue, size_t count, const OmmGpuBakerPrebuildMemoryStats& memoryStats);
-    OmmGpuBakerPrebuildMemoryStats GetGpuBakerPrebuildMemoryStats();
-    void CreateGpuBakerBuffers(const OmmGpuBakerPrebuildMemoryStats& memoryStats);
-    void BindGpuBakerBuffers(const OmmGpuBakerPrebuildMemoryStats& memoryStats, const size_t* ids, const size_t count);
+    void RunOmmSetupPass(ommhelper::OmmBakeGeometryDesc** queue, size_t count, OmmGpuBakerPrebuildMemoryStats& memoryStats);
+    void BakeOmmGpu(std::vector<ommhelper::OmmBakeGeometryDesc*>& batch);
+    OmmGpuBakerPrebuildMemoryStats GetGpuBakerPrebuildMemoryStats(bool printStats);
+
+    void CreateAndBindGpuBakerSatitcBuffer(const OmmGpuBakerPrebuildMemoryStats& memoryStats);
+    void CreateAndBindGpuBakerArrayDataBuffer(const OmmGpuBakerPrebuildMemoryStats& memoryStats);
+    void CreateAndBindGpuBakerReadbackBuffer(const OmmGpuBakerPrebuildMemoryStats& memoryStats);
 
     inline uint64_t GetInstanceHash(uint32_t meshId, uint32_t materialId) { return uint64_t(meshId) << 32 | uint64_t(materialId); };
     inline std::string GetOmmCacheFilename() {return m_OmmCacheFolderName + std::string("/") + m_SceneName; };
-    void InitializeOmmGeometryFromCache(std::vector<size_t>& bakeQueue, size_t start, size_t count);
-    void SaveMaskCache(uint32_t id);
+    void InitializeOmmGeometryFromCache(const OmmBatch& batch, std::vector<ommhelper::OmmBakeGeometryDesc*>& outBakeQueue);
+    void SaveMaskCache(const OmmBatch& batch);
 
-    inline uint64_t GetInstanceMask(uint32_t meshIndex, uint32_t materialIndex) { return uint64_t(meshIndex) << 32 | uint64_t(materialIndex); }
     nri::AccelerationStructure* GetMaskedBlas(uint64_t insatanceMask);
 
     void ReleaseMaskedGeometry();
@@ -807,17 +810,16 @@ private:
     std::vector<nri::Buffer*> m_OmmAlphaGeometryBuffers;
 
     //baker and builder queues
-    std::vector<ommhelper::OmmBakeGeometryDesc> m_OmmBakeInstances;
-    std::vector<ommhelper::MaskedGeometryBuildDesc> m_OmmGeometryBuildQueue;
+    //std::vector<ommhelper::OmmBakeGeometryDesc> m_OmmBakeInstances;
 
     //temporal resources for baking
-    std::vector<float> m_OmmRawAlphaChannelForCpuBaker;
+    std::vector<uint8_t> m_OmmRawAlphaChannelForCpuBaker;
 
-    std::vector<nri::Buffer*> m_OmmGpuOutputBuffers;
-    std::vector<nri::Buffer*> m_OmmGpuTransientBuffers;
-    std::vector<nri::Buffer*> m_OmmGpuReadbackBuffers;
+    nri::Buffer* m_OmmGpuOutputBuffers[(uint32_t)ommhelper::OmmDataLayout::GpuOutputNum] = {};
+    nri::Buffer* m_OmmGpuReadbackBuffers[(uint32_t)ommhelper::OmmDataLayout::GpuOutputNum] = {};
+    nri::Buffer* m_OmmGpuTransientBuffers[OMM_SDK_TRANSIENT_BUFFER_MAX_NUM] = {};
+
     std::vector<nri::Buffer*> m_OmmCpuUploadBuffers;
-
     std::vector<nri::Memory*> m_OmmBakerAllocations;
     std::vector<nri::Memory*> m_OmmTmpAllocations;
 
@@ -840,7 +842,6 @@ private:
     ommhelper::OmmBakeDesc m_OmmBakeDesc = {};
     std::string m_SceneName = "Scene";
     std::string m_OmmCacheFolderName = "_OmmCache";
-    size_t m_OmmWorkloadBatchSize = 32;
     bool m_EnableOmm = true;
     bool m_ShowFullSettings = false;
     bool m_IsOmmBakingActive = false;
@@ -923,16 +924,16 @@ bool Sample::Initialize(nri::GraphicsAPI graphicsAPI)
 {
     Rand::Seed(106937, &m_FastRandState);
 
-    nri::PhysicalDeviceGroup physicalDeviceGroup = {};
-    if (!helper::FindPhysicalDeviceGroup(physicalDeviceGroup))
-        return false;
+    nri::PhysicalDeviceGroup mostPerformantPhysicalDeviceGroup = {};
+    uint32_t deviceGroupNum = 1;
+    NRI_ABORT_ON_FAILURE(nri::GetPhysicalDevices(&mostPerformantPhysicalDeviceGroup, deviceGroupNum));
 
     nri::DeviceCreationDesc deviceCreationDesc = {};
     deviceCreationDesc.graphicsAPI = graphicsAPI;
     deviceCreationDesc.enableAPIValidation = m_DebugAPI;
     deviceCreationDesc.enableNRIValidation = m_DebugNRI;
     deviceCreationDesc.spirvBindingOffsets = SPIRV_BINDING_OFFSETS;
-    deviceCreationDesc.physicalDeviceGroup = &physicalDeviceGroup;
+    deviceCreationDesc.physicalDeviceGroup = &mostPerformantPhysicalDeviceGroup;
     DlssIntegration::SetupDeviceExtensions(deviceCreationDesc);
     NRI_ABORT_ON_FAILURE( nri::CreateDevice(deviceCreationDesc, m_Device) );
 
@@ -1157,6 +1158,17 @@ bool Sample::Initialize(nri::GraphicsAPI graphicsAPI)
     return CreateUserInterface(*m_Device, NRI, NRI, swapChainFormat);
 }
 
+void BindBuffersToMemory(NRIInterface& nri, nri::Device* device, nri::Buffer** buffers, size_t count, std::vector<nri::Memory*>& memories, nri::MemoryLocation location)
+{
+    nri::ResourceGroupDesc resourceGroupDesc = {};
+    resourceGroupDesc.buffers = buffers;
+    resourceGroupDesc.bufferNum = (uint32_t)count;
+    resourceGroupDesc.memoryLocation = location;
+    size_t allocationOffset = memories.size();
+    memories.resize(allocationOffset + nri.CalculateAllocationNumber(*device, resourceGroupDesc), nullptr);
+    NRI_ABORT_ON_FAILURE(nri.AllocateAndBindMemory(*device, resourceGroupDesc, memories.data() + allocationOffset));
+}
+
 nri::AccelerationStructure* Sample::GetMaskedBlas(uint64_t insatanceMask)
 {
     const auto& it = m_InstanceMaskToMaskedBlasData.find(insatanceMask);
@@ -1293,13 +1305,7 @@ void Sample::InitAlphaTestedGeometry()
     }
 
     { // Bind memories
-        nri::ResourceGroupDesc resourceGroupDesc = {};
-        resourceGroupDesc.buffers = m_OmmAlphaGeometryBuffers.data();
-        resourceGroupDesc.bufferNum = (uint32_t)m_OmmAlphaGeometryBuffers.size();
-        resourceGroupDesc.memoryLocation = nri::MemoryLocation::DEVICE;
-        size_t allocationOffset = m_OmmAlphaGeometryMemories.size();
-        m_OmmAlphaGeometryMemories.resize(allocationOffset + NRI.CalculateAllocationNumber(*m_Device, resourceGroupDesc), nullptr);
-        NRI_ABORT_ON_FAILURE(NRI.AllocateAndBindMemory(*m_Device, resourceGroupDesc, m_OmmAlphaGeometryMemories.data() + allocationOffset));
+        BindBuffersToMemory(NRI, m_Device, m_OmmAlphaGeometryBuffers.data(), m_OmmAlphaGeometryBuffers.size(), m_OmmAlphaGeometryMemories, nri::MemoryLocation::DEVICE);
     }
 
     std::vector<nri::BufferUploadDesc> uploadDescs;
@@ -1329,7 +1335,7 @@ void Sample::InitAlphaTestedGeometry()
     NRI.UploadData(*m_CommandQueue, nullptr, 0, uploadDescs.data(), (uint32_t)uploadDescs.size());
 }
 
-void PreprocessAlphaTexture(detexTexture* texture, std::vector<float>& outAlphaChannel)
+void PreprocessAlphaTexture(detexTexture* texture, std::vector<uint8_t>& outAlphaChannel)
 {
     uint8_t* pixels = texture->data;
     std::vector<uint8_t> decompressedImage;
@@ -1354,7 +1360,6 @@ void PreprocessAlphaTexture(detexTexture* texture, std::vector<float>& outAlphaC
     uint32_t pixelCount = texture->width * texture->height;
     outAlphaChannel.reserve(pixelCount);
 
-    float accumAlpha = 0.0f;
     for (uint32_t i = 0; i < pixelCount; ++i)
     {
         uint32_t offset = i * pixelSize;
@@ -1369,14 +1374,8 @@ void PreprocessAlphaTexture(detexTexture* texture, std::vector<float>& outAlphaC
             uint64_t pixel = *(uint64_t*)(pixels + offset);
             alphaValue = (uint32_t)detexPixel64GetA16(pixel);
         }
-        float alpha = (float)alphaValue / 255.0f;
-        accumAlpha += alpha;
-        outAlphaChannel.push_back(alpha);
+        outAlphaChannel.push_back(uint8_t(alphaValue));
     }
-
-    accumAlpha = accumAlpha / (float)pixelCount;
-    if (accumAlpha == 1.0f || accumAlpha == 0.0f)
-        outAlphaChannel.resize(0);//texture is fully opaque or transparent
 }
 
 inline bool AreBakerOutputsOnGPU(const ommhelper::OmmBakeGeometryDesc& instance)
@@ -1387,40 +1386,47 @@ inline bool AreBakerOutputsOnGPU(const ommhelper::OmmBakeGeometryDesc& instance)
     return result;
 }
 
-void Sample::FillOmmBakerInputs(std::vector<ommhelper::OmmBakeGeometryDesc>& ommBakeQueue)
+void Sample::FillOmmBakerInputs()
 {
-    ommBakeQueue.resize(m_OmmAlphaGeometry.size());
-    std::map<uint32_t, size_t> materialdToTextureDataOffset;
+    std::map<uint64_t, size_t> materialMaskToTextureDataOffset;
     if (m_OmmBakeDesc.type == ommhelper::OmmBakerType::CPU)
     { // Decompress textures and store alpha channel in a separate buffer for cpu baker
         std::set<uint32_t> uniqueMaterialIds;
-        std::vector<float> workVector;
+        std::vector<uint8_t> workVector;
         for (size_t i = 0; i < m_OmmAlphaGeometry.size(); ++i)
         { // Sort out unique textures to avoid resource duplication
-            workVector.clear();
-
             AlphaTestedGeometry& geometry = m_OmmAlphaGeometry[i];
+            ommhelper::InputTexture& bakerTexure = geometry.bakeDesc.texture;
             uint32_t materialId = geometry.materialIndex;
+
+            const utils::Material& material = m_Scene.materials[materialId];
+            utils::Texture* utilsTexture = m_Scene.textures[material.diffuseMapIndex];
+
+            uint32_t minMip = utilsTexture->GetMipNum() - 1;
+            uint32_t textureMipOffset = m_OmmBakeDesc.mipBias > minMip ? minMip : m_OmmBakeDesc.mipBias;
+            uint32_t remainingMips = minMip - textureMipOffset + 1;
+            uint32_t mipRange = m_OmmBakeDesc.mipCount > remainingMips ? remainingMips : m_OmmBakeDesc.mipCount;
+
+            bakerTexure.mipOffset = textureMipOffset;
+            bakerTexure.mipNum = mipRange;
 
             size_t uniqueMaterialsNum = uniqueMaterialIds.size();
             uniqueMaterialIds.insert(materialId);
             if (uniqueMaterialsNum == uniqueMaterialIds.size())
                 continue;//duplication
 
-            size_t rawBufferOffset = m_OmmRawAlphaChannelForCpuBaker.size();
-            const utils::Material& material = m_Scene.materials[materialId];
-            utils::Texture* utilsTexture = m_Scene.textures[material.diffuseMapIndex];
-            uint32_t minMip = utilsTexture->GetMipNum() - 1;
-            uint32_t textureMipOffset = m_OmmBakeDesc.mipBias > minMip ? minMip : m_OmmBakeDesc.mipBias;
-            detexTexture* texture = (detexTexture*)utilsTexture->mips[textureMipOffset];
-            PreprocessAlphaTexture(texture, workVector);
-            if (workVector.empty())
+            for (uint32_t mip = 0; mip < mipRange; ++mip)
             {
-                printf("[FAIL] Fully opaque/transparent texture has been submited for OMM baking!\n");
-                std::abort();
+                uint32_t mipId = textureMipOffset + mip;
+                detexTexture* texture = (detexTexture*)utilsTexture->mips[mipId];
+
+                PreprocessAlphaTexture(texture, workVector);
+
+            size_t rawBufferOffset = m_OmmRawAlphaChannelForCpuBaker.size();
+                m_OmmRawAlphaChannelForCpuBaker.insert(m_OmmRawAlphaChannelForCpuBaker.end(), workVector.begin(), workVector.end());
+                materialMaskToTextureDataOffset.insert(std::make_pair(uint64_t(materialId) << 32 | uint64_t(mipId), rawBufferOffset));
+                workVector.clear();
             }
-            m_OmmRawAlphaChannelForCpuBaker.insert(m_OmmRawAlphaChannelForCpuBaker.end(), workVector.begin(), workVector.end());
-            materialdToTextureDataOffset.insert(std::make_pair(materialId, rawBufferOffset));
         }
     }
 
@@ -1428,28 +1434,43 @@ void Sample::FillOmmBakerInputs(std::vector<ommhelper::OmmBakeGeometryDesc>& omm
     { // Fill baking queue desc
         bool isGpuBaker = m_OmmBakeDesc.type == ommhelper::OmmBakerType::GPU;
 
-        ommhelper::OmmBakeGeometryDesc& ommDesc = ommBakeQueue[i];
-        const AlphaTestedGeometry& geometry = m_OmmAlphaGeometry[i];
+        AlphaTestedGeometry& geometry = m_OmmAlphaGeometry[i];
+        ommhelper::OmmBakeGeometryDesc& ommDesc = geometry.bakeDesc;
         const utils::Mesh& mesh = m_Scene.meshes[geometry.meshIndex];
         const utils::Material& material = m_Scene.materials[geometry.materialIndex];
         nri::Texture* texture = geometry.alphaTexture;
 
+        ommhelper::InputTexture bakerTexture = ommDesc.texture;
         utils::Texture* utilsTexture = m_Scene.textures[material.diffuseMapIndex];
-        uint32_t minMip = utilsTexture->GetMipNum() - 1;
-        uint32_t textureMipOffset = m_OmmBakeDesc.mipBias > minMip ? minMip : m_OmmBakeDesc.mipBias;
-
         if (isGpuBaker)
         {
             ommDesc.indices.nriBufferOrPtr.buffer = geometry.indices;
             ommDesc.uvs.nriBufferOrPtr.buffer = geometry.uvs;
-            ommDesc.texture.nriTextureOrPtr.texture = texture;
+            uint32_t minMip = utilsTexture->GetMipNum() - 1;
+            uint32_t textureMipOffset = m_OmmBakeDesc.mipBias > minMip ? minMip : m_OmmBakeDesc.mipBias;
+            ommDesc.texture.mipOffset = textureMipOffset;
+            ommDesc.texture.mipNum = 1; // gpu baker currently doesnt support multiple mips support
+            ommhelper::MipDesc& mipDesc = ommDesc.texture.mips[0];
+            mipDesc.nriTextureOrPtr.texture = texture;
+            mipDesc.width = reinterpret_cast<detexTexture*>(utilsTexture->mips[bakerTexture.mipOffset])->width;;
+            mipDesc.height = reinterpret_cast<detexTexture*>(utilsTexture->mips[bakerTexture.mipOffset])->height;;
         }
         else
         {
             ommDesc.indices.nriBufferOrPtr.ptr = (void*)geometry.indexData.data();
             ommDesc.uvs.nriBufferOrPtr.ptr = (void*)geometry.uvData.data();
-            size_t texDataOffset = materialdToTextureDataOffset.find(geometry.materialIndex)->second;
-            ommDesc.texture.nriTextureOrPtr.ptr = (void*)(m_OmmRawAlphaChannelForCpuBaker.data() + texDataOffset);
+
+            for (uint32_t mip = 0; mip < bakerTexture.mipNum; ++mip)
+            {
+                uint32_t mipId = bakerTexture.mipOffset + mip;
+                uint64_t materialMask = uint64_t(geometry.materialIndex) << 32 | uint64_t(mipId);
+                size_t texDataOffset = materialMaskToTextureDataOffset.find(materialMask)->second;
+
+                ommhelper::MipDesc& mipDesc = ommDesc.texture.mips[mip];
+                mipDesc.nriTextureOrPtr.ptr = (void*)(m_OmmRawAlphaChannelForCpuBaker.data() + texDataOffset);
+                mipDesc.width = reinterpret_cast<detexTexture*>(utilsTexture->mips[mipId])->width;
+                mipDesc.height = reinterpret_cast<detexTexture*>(utilsTexture->mips[mipId])->height;
+            }
         }
 
         ommDesc.indices.numElements = mesh.indexNum;
@@ -1466,10 +1487,7 @@ void Sample::FillOmmBakerInputs(std::vector<ommhelper::OmmBakeGeometryDesc>& omm
         ommDesc.uvs.bufferSize = geometry.uvBufferSize;
         ommDesc.uvs.offsetInStruct = 0;
 
-        ommDesc.texture.width = reinterpret_cast<detexTexture*>(utilsTexture->mips[textureMipOffset])->width;
-        ommDesc.texture.height = reinterpret_cast<detexTexture*>(utilsTexture->mips[textureMipOffset])->height;
-        ommDesc.texture.mipOffset = textureMipOffset;
-        ommDesc.texture.format = isGpuBaker ? utilsTexture->format : nri::Format::R32_SFLOAT;
+        ommDesc.texture.format = isGpuBaker ? utilsTexture->format : nri::Format::R8_UNORM;
         ommDesc.texture.addressingMode = nri::AddressMode::REPEAT;
         ommDesc.texture.alphaChannelId = 3;
         ommDesc.alphaCutoff = 0.5f;
@@ -1492,37 +1510,37 @@ void PrepareOmmUsageCountsBuffers(ommhelper::OpacityMicroMapsHelper& ommHelper, 
     }
 }
 
-void PrepareCpuBuilderInputs(NRIInterface& NRI, ommhelper::OmmBakeGeometryDesc* ommBakeQueue, ommhelper::MaskedGeometryBuildDesc* ommGeometryBuildQueue, const size_t count)
+void PrepareCpuBuilderInputs(NRIInterface& NRI, const OmmBatch& batch, std::vector<AlphaTestedGeometry>& geometries)
 { // Copy raw mask data to the upload heaps to use during micromap and blas build
-    for (size_t i = 0; i < count; ++i)
+    for (size_t i = batch.offset; i < batch.offset + batch.count; ++i)
     {
-        ommhelper::OmmBakeGeometryDesc& bakeResult = ommBakeQueue[i];
+        AlphaTestedGeometry& geometry = geometries[i];
+        const ommhelper::OmmBakeGeometryDesc& bakeResult = geometry.bakeDesc;
         if (bakeResult.outData[(uint32_t)ommhelper::OmmDataLayout::DescArrayHistogram].empty())
             continue;
 
-        ommhelper::MaskedGeometryBuildDesc& buildDesc = ommGeometryBuildQueue[i];
+        ommhelper::MaskedGeometryBuildDesc& buildDesc = geometry.buildDesc;
         for (uint32_t y = 0; y < (uint32_t)ommhelper::OmmDataLayout::BlasBuildGpuBuffersNum; ++y)
         {
-            void* map = NRI.MapBuffer(*buildDesc.inputs.buffers[y].buffer, 0, bakeResult.outData[y].size());
+            nri::Buffer* buffer = buildDesc.inputs.buffers[y].buffer;
+            uint64_t mapSize = (uint64_t)bakeResult.outData[y].size();
+            void* map = NRI.MapBuffer(*buffer, 0, mapSize);
             memcpy(map, bakeResult.outData[y].data(), bakeResult.outData[y].size());
             NRI.UnmapBuffer(*buildDesc.inputs.buffers[y].buffer);
         }
     }
 }
 
-void Sample::FillOmmBlasBuildInputs(size_t start, size_t count)
+void Sample::FillOmmBlasBuildQueue(const OmmBatch& batch, std::vector<ommhelper::MaskedGeometryBuildDesc*>& outBuildQueue)
 {
-    nri::BufferDesc bufferDesc = {};
-    bufferDesc.physicalDeviceMask = 0;
-    bufferDesc.usageMask = nri::BufferUsageBits::SHADER_RESOURCE;
+    outBuildQueue.reserve(batch.count);
 
     size_t uploadBufferOffset = m_OmmCpuUploadBuffers.size();
-    for (size_t i = start; i < start + count; ++i)
+    for (size_t id = batch.offset; id < batch.offset + batch.count; ++id)
     {
-        ommhelper::OmmBakeGeometryDesc& bakeResult = m_OmmBakeInstances[i];
-
-        ommhelper::MaskedGeometryBuildDesc& buildDesc = m_OmmGeometryBuildQueue[i];
-        const AlphaTestedGeometry& geometry = m_OmmAlphaGeometry[i];
+        AlphaTestedGeometry& geometry = m_OmmAlphaGeometry[id];
+        ommhelper::OmmBakeGeometryDesc& bakeResult = geometry.bakeDesc;
+        ommhelper::MaskedGeometryBuildDesc& buildDesc = geometry.buildDesc;
         const utils::Mesh& mesh = m_Scene.meshes[geometry.meshIndex];
 
         ommhelper::InputBuffer& vertices = buildDesc.inputs.vertices;
@@ -1553,6 +1571,10 @@ void Sample::FillOmmBlasBuildInputs(size_t start, size_t count)
         }
         else
         { // Create upload buffers to store baker output during ommArray/blas creation
+            nri::BufferDesc bufferDesc = {};
+            bufferDesc.physicalDeviceMask = 0;
+            bufferDesc.usageMask = nri::BufferUsageBits::SHADER_RESOURCE;
+
             for (uint32_t j = 0; j < (uint32_t)ommhelper::OmmDataLayout::BlasBuildGpuBuffersNum; ++j)
             {
                 bufferDesc.size = bakeResult.outData[j].size();
@@ -1568,41 +1590,40 @@ void Sample::FillOmmBlasBuildInputs(size_t start, size_t count)
 
         buildDesc.inputs.indexHistogram = bakeResult.outData[(uint32_t)ommhelper::OmmDataLayout::IndexHistogram].data();
         buildDesc.inputs.indexHistogramNum = bakeResult.outIndexHistogramCount;
+        outBuildQueue.push_back(&buildDesc);
     }
 
     if (m_OmmCpuUploadBuffers.empty() == false)
     { // Bind cpu baker output memories
-        nri::ResourceGroupDesc resourceGroupDesc = {};
-        resourceGroupDesc.buffers = m_OmmCpuUploadBuffers.data() + uploadBufferOffset;
-        resourceGroupDesc.bufferNum = (uint32_t)(m_OmmCpuUploadBuffers.size() - uploadBufferOffset);
-        resourceGroupDesc.memoryLocation = nri::MemoryLocation::HOST_UPLOAD;
-        size_t allocationOffset = m_OmmTmpAllocations.size();
-        m_OmmTmpAllocations.resize(allocationOffset + NRI.CalculateAllocationNumber(*m_Device, resourceGroupDesc), nullptr);
-        NRI_ABORT_ON_FAILURE(NRI.AllocateAndBindMemory(*m_Device, resourceGroupDesc, m_OmmTmpAllocations.data() + allocationOffset));
-        PrepareCpuBuilderInputs(NRI, m_OmmBakeInstances.data() + start, m_OmmGeometryBuildQueue.data() + start, count);
+        size_t uploadBufferCount = m_OmmCpuUploadBuffers.size() - uploadBufferOffset;
+        BindBuffersToMemory(NRI, m_Device, m_OmmCpuUploadBuffers.data() + uploadBufferOffset, uploadBufferCount, m_OmmTmpAllocations, nri::MemoryLocation::HOST_UPLOAD);
+        PrepareCpuBuilderInputs(NRI, batch, m_OmmAlphaGeometry);
     }
 
-    for (size_t i = start; i < start + count; ++i)
+    for (size_t id = batch.offset; id < batch.offset + batch.count; ++id)
     { // Release raw cpu side data. In case of cpu baker it's in the upload heaps, in case of gpu it's already saved as cache
+        AlphaTestedGeometry& geometry = m_OmmAlphaGeometry[id];
+        ommhelper::OmmBakeGeometryDesc& bakeResult = geometry.bakeDesc;
         for (uint32_t k = 0; k < (uint32_t)ommhelper::OmmDataLayout::BlasBuildGpuBuffersNum; ++k)
         {
-            m_OmmBakeInstances[i].outData[k].resize(0);
-            m_OmmBakeInstances[i].outData[k].shrink_to_fit();
+             bakeResult.outData[k].resize(0);
+             bakeResult.outData[k].shrink_to_fit();
         }
     }
 }
 
-void CopyBatchToReadBackBuffer(NRIInterface& NRI, nri::CommandBuffer* commandBuffer, ommhelper::OmmBakeGeometryDesc& lastInBatch, uint32_t bufferId)
+void CopyBatchToReadBackBuffer(NRIInterface& NRI, nri::CommandBuffer* commandBuffer, ommhelper::OmmBakeGeometryDesc& firstInBatch, ommhelper::OmmBakeGeometryDesc& lastInBatch, uint32_t bufferId)
 {
-    ommhelper::GpuBakerBuffer& resource = lastInBatch.gpuBuffers[bufferId];
-    ommhelper::GpuBakerBuffer& readback = lastInBatch.readBackBuffers[bufferId];
+    ommhelper::GpuBakerBuffer& firstResource = firstInBatch.gpuBuffers[bufferId];
+    ommhelper::GpuBakerBuffer& lastResource = lastInBatch.gpuBuffers[bufferId];
+    ommhelper::GpuBakerBuffer& firstReadback = firstInBatch.readBackBuffers[bufferId];
 
-    nri::Buffer* src = resource.buffer;
-    nri::Buffer* dst = readback.buffer;
-    size_t srcOffset = 0;
-    size_t dstOffset = 0;
+    nri::Buffer* src = firstResource.buffer;
+    nri::Buffer* dst = firstReadback.buffer;
+    size_t srcOffset = firstResource.offset;
+    size_t dstOffset = firstReadback.offset;
 
-    size_t size = resource.offset + resource.dataSize;//total size of baker output for the batch
+    size_t size = (lastResource.offset + lastResource.dataSize) - firstResource.offset;//total size of baker output for the batch
     NRI.CmdCopyBuffer(*commandBuffer, *dst, 0, dstOffset, *src, 0, srcOffset, size);
 }
 
@@ -1623,48 +1644,41 @@ void CopyFromReadBackBuffer(NRIInterface& NRI, ommhelper::OmmBakeGeometryDesc& d
     NRI.UnmapBuffer(*readback);
 }
 
-OmmGpuBakerPrebuildMemoryStats Sample::GetGpuBakerPrebuildMemoryStats()
+OmmGpuBakerPrebuildMemoryStats Sample::GetGpuBakerPrebuildMemoryStats(bool printStats)
 {
     OmmGpuBakerPrebuildMemoryStats result = {};
     uint32_t sizeAlignment = NRI.GetDeviceDesc(*m_Device).storageBufferOffsetAlignment;
-    size_t requestedMaxSizes[(uint32_t)ommhelper::OmmDataLayout::GpuOutputNum] = {};
-    for (size_t i = 0; i < m_OmmBakeInstances.size(); ++i)
+    for (size_t i = 0; i < m_OmmAlphaGeometry.size(); ++i)
     {
-        ommhelper::OmmBakeGeometryDesc& instance = m_OmmBakeInstances[i];
+        AlphaTestedGeometry& geometry = m_OmmAlphaGeometry[i];
+        ommhelper::OmmBakeGeometryDesc& instance = geometry.bakeDesc;
         ommhelper::OmmBakeGeometryDesc::GpuBakerPrebuildInfo& gpuBakerPreBuildInfo = instance.gpuBakerPreBuildInfo;
 
-        size_t accumulation = 0;
         for (uint32_t y = 0; y < (uint32_t)ommhelper::OmmDataLayout::GpuOutputNum; ++y)
         {
             gpuBakerPreBuildInfo.dataSizes[y] = helper::Align(gpuBakerPreBuildInfo.dataSizes[y], sizeAlignment);
-            accumulation += gpuBakerPreBuildInfo.dataSizes[y];
-            requestedMaxSizes[y] = std::max(requestedMaxSizes[y], gpuBakerPreBuildInfo.dataSizes[y]);
+            result.outputTotalSizes[y] += gpuBakerPreBuildInfo.dataSizes[y];
+            result.outputMaxSizes[y] = std::max<size_t>(gpuBakerPreBuildInfo.dataSizes[y], result.outputMaxSizes[y]);
+            result.total += gpuBakerPreBuildInfo.dataSizes[y];
         }
 
-        result.maximum = std::max(result.maximum, accumulation);
-        result.total += accumulation;
-
-        for (size_t y = 0; y < omm::Gpu::PreBakeInfo::MAX_TRANSIENT_POOL_BUFFERS; ++y)
+        for (size_t y = 0; y < OMM_SDK_TRANSIENT_BUFFER_MAX_NUM; ++y)
         {
             gpuBakerPreBuildInfo.transientBufferSizes[y] = helper::Align(gpuBakerPreBuildInfo.transientBufferSizes[y], sizeAlignment);
             result.maxTransientBufferSizes[y] = std::max(result.maxTransientBufferSizes[y], gpuBakerPreBuildInfo.transientBufferSizes[y]);
         }
-
     }
 
     auto toBytes = [](size_t sizeInMb) -> size_t { return sizeInMb * 1024 * 1024; };
     const size_t defaultSizes[] = { toBytes(64), toBytes(5), toBytes(5), toBytes(5), toBytes(5), 1024 };
 
-    for (uint32_t y = 0; y < (uint32_t)ommhelper::OmmDataLayout::GpuOutputNum; ++y)
-        result.outputMaxSizes[y] = std::max<size_t>(requestedMaxSizes[y], defaultSizes[y]);
-
-    if (m_OmmBakeDesc.type == ommhelper::OmmBakerType::GPU)
+    if (m_OmmBakeDesc.type == ommhelper::OmmBakerType::GPU && printStats)
     {
         uint64_t totalPrimitiveNum = 0;
         uint64_t maxPrimitiveNum = 0;
-        for (auto& desc : m_OmmBakeInstances)
+        for (auto& geomtry : m_OmmAlphaGeometry)
         {
-            uint64_t numPrimitives = desc.indices.numElements / 3;
+            uint64_t numPrimitives = geomtry.bakeDesc.indices.numElements / 3;
             totalPrimitiveNum += numPrimitives;
             maxPrimitiveNum = std::max<uint64_t>(maxPrimitiveNum, numPrimitives);
         }
@@ -1674,27 +1688,29 @@ OmmGpuBakerPrebuildMemoryStats Sample::GetGpuBakerPrebuildMemoryStats()
         printf("Mask Format: [%s]\n", m_OmmBakeDesc.format == ommhelper::OmmFormats::OC1_2_STATE ? "OC1_2_STATE" : "OC1_4_STATE");
         printf("Subdivision Level: [%lu]\n", m_OmmBakeDesc.subdivisionLevel);
         printf("Mip Bias: [%lu]\n", m_OmmBakeDesc.mipBias);
-        printf("Num Geoemetries: [%llu]\n", m_OmmBakeInstances.size());
+        printf("Num Geometries: [%llu]\n", m_OmmAlphaGeometry.size());
         printf("Num Primitives: Max:[%llu],  Total:[%llu]\n", maxPrimitiveNum, totalPrimitiveNum);
-        printf("Baker output memeory requested(mb): (max)%.3f | (total)%.3f\n", toMb(result.maximum), toMb(result.total));
-        printf("Max ArrayDataSize(mb): %.3f\n", toMb(requestedMaxSizes[(uint32_t)ommhelper::OmmDataLayout::ArrayData]));
-        printf("Max DescArraySize(mb): %.3f\n", toMb(requestedMaxSizes[(uint32_t)ommhelper::OmmDataLayout::DescArray]));
-        printf("Max IndicesSize(mb): %.3f\n", toMb(requestedMaxSizes[(uint32_t)ommhelper::OmmDataLayout::Indices]));
+        printf("Baker output memeory requested(mb): (total)%.3f\n", toMb(result.total));
+        printf("Total ArrayDataSize(mb): %.3f\n", toMb(result.outputTotalSizes[(uint32_t)ommhelper::OmmDataLayout::ArrayData]));
+        printf("Total DescArraySize(mb): %.3f\n", toMb(result.outputTotalSizes[(uint32_t)ommhelper::OmmDataLayout::DescArray]));
+        printf("Total IndicesSize(mb): %.3f\n", toMb(result.outputTotalSizes[(uint32_t)ommhelper::OmmDataLayout::Indices]));
     }
     return result;
 }
 
-std::vector<OmmBatch> GetGpuBakerBatches(const std::vector<ommhelper::OmmBakeGeometryDesc>& ommBakeQueue, const OmmGpuBakerPrebuildMemoryStats& memoryStats, const size_t batchSize)
+std::vector<OmmBatch> GetGpuBakerBatches(const std::vector<AlphaTestedGeometry>& geometries, const OmmGpuBakerPrebuildMemoryStats& memoryStats, const size_t batchSize)
 {
-    const size_t batchMaxSize = batchSize > ommBakeQueue.size() ? ommBakeQueue.size() : batchSize;
+    const size_t batchMaxSize = batchSize > geometries.size() ? geometries.size() : batchSize;
     std::vector<OmmBatch> batches(1);
     size_t accumulation[(uint32_t)ommhelper::OmmDataLayout::GpuOutputNum] = {};
-    for (size_t i = 0; i < ommBakeQueue.size(); ++i)
+    for (size_t i = 0; i < geometries.size(); ++i)
     {
-        const ommhelper::OmmBakeGeometryDesc::GpuBakerPrebuildInfo& info = ommBakeQueue[i].gpuBakerPreBuildInfo;
+        const AlphaTestedGeometry& geometry = geometries[i];
+        const ommhelper::OmmBakeGeometryDesc& bakeDesc = geometry.bakeDesc;
+        const ommhelper::OmmBakeGeometryDesc::GpuBakerPrebuildInfo& info = bakeDesc.gpuBakerPreBuildInfo;
 
         bool isAnyOverLimit = false;
-        size_t nextSizes[(uint32_t)ommhelper::OmmDataLayout::GpuOutputNum];
+        size_t nextSizes[(uint32_t)ommhelper::OmmDataLayout::GpuOutputNum] = {};
         for (uint32_t y = 0; y < (uint32_t)ommhelper::OmmDataLayout::GpuOutputNum; ++y)
         {
             nextSizes[y] = accumulation[y] + info.dataSizes[y];
@@ -1715,7 +1731,7 @@ std::vector<OmmBatch> GetGpuBakerBatches(const std::vector<ommhelper::OmmBakeGeo
         ++batches.back().count;
         if (batches.back().count >= batchMaxSize)
         {
-            if (i + 1 < ommBakeQueue.size())
+            if (i + 1 < geometries.size())
             {
                 batches.push_back({ i + 1, 0 });
                 for (uint32_t y = 0; y < (uint32_t)ommhelper::OmmDataLayout::GpuOutputNum; ++y)
@@ -1727,128 +1743,197 @@ std::vector<OmmBatch> GetGpuBakerBatches(const std::vector<ommhelper::OmmBakeGeo
     return batches;
 }
 
-void Sample::BindGpuBakerBuffers(const OmmGpuBakerPrebuildMemoryStats& memoryStats, const size_t* ids, const size_t count)
-{ // Bind gpu outputs and calculate offsets
-    size_t offsets[(uint32_t)ommhelper::OmmDataLayout::GpuOutputNum] = {};
-    for (size_t i = 0; i < count; ++i)
+void Sample::CreateAndBindGpuBakerReadbackBuffer(const OmmGpuBakerPrebuildMemoryStats& memoryStats)
+{ // for caching gpu produced omm_sdk output
+
+    size_t dataTypeBegin = (size_t)ommhelper::OmmDataLayout::ArrayData;
+    size_t dataTypeEnd = (size_t)ommhelper::OmmDataLayout::DescArrayHistogram;
+    { // create and bind buffers to memory
+        for (size_t i = dataTypeBegin; i < dataTypeEnd; ++i)
     {
-        size_t id = ids[i];
-        ommhelper::OmmBakeGeometryDesc& desc = m_OmmBakeInstances[id];
+            nri::BufferDesc bufferDesc = {};
+            bufferDesc.physicalDeviceMask = 0;
+            bufferDesc.structureStride = sizeof(uint32_t);
+            bufferDesc.size = memoryStats.outputTotalSizes[i];
+            bufferDesc.usageMask = nri::BufferUsageBits::NONE;
+            NRI_ABORT_ON_FAILURE(NRI.CreateBuffer(*m_Device, bufferDesc, m_OmmGpuReadbackBuffers[i]));
+        }
+        BindBuffersToMemory(NRI, m_Device, &m_OmmGpuReadbackBuffers[dataTypeBegin], dataTypeEnd - dataTypeBegin, m_OmmBakerAllocations, nri::MemoryLocation::HOST_READBACK);
+    }
 
-        for (uint32_t j = 0; j < (uint32_t)ommhelper::OmmDataLayout::GpuOutputNum; ++j)
+    { // bind baker insatnces to the buffer
+        size_t perDataTypeOffsets[(size_t)ommhelper::OmmDataLayout::GpuOutputNum] = {};
+        for (size_t id = 0; id < m_OmmAlphaGeometry.size(); ++id)
         {
-            desc.gpuBuffers[j].dataSize = desc.gpuBakerPreBuildInfo.dataSizes[j];
+            AlphaTestedGeometry& geometry = m_OmmAlphaGeometry[id];
+            ommhelper::OmmBakeGeometryDesc& desc = geometry.bakeDesc;
+            for (size_t i = dataTypeBegin; i < dataTypeEnd; ++i)
+        {
+                ommhelper::GpuBakerBuffer& resource = desc.readBackBuffers[i];
+                size_t& offset = perDataTypeOffsets[i];
 
+                resource.dataSize = desc.gpuBakerPreBuildInfo.dataSizes[i];
+                resource.buffer = m_OmmGpuReadbackBuffers[i];
+                resource.bufferSize = memoryStats.outputTotalSizes[i];
+                resource.offset = offset;
+                offset += resource.dataSize;
+            }
+        }
+    }
+}
+
+void Sample::CreateAndBindGpuBakerArrayDataBuffer(const OmmGpuBakerPrebuildMemoryStats& memoryStats)
+{ // in case of using setup pass of OMM-SDK, array data buffer allocation must be done separately
+    const uint32_t arrayDataId = (uint32_t)ommhelper::OmmDataLayout::ArrayData;
+
+    nri::BufferDesc bufferDesc = {};
+    bufferDesc.physicalDeviceMask = 0;
+    bufferDesc.structureStride = sizeof(uint32_t);
+    bufferDesc.size = memoryStats.outputTotalSizes[arrayDataId];
+    bufferDesc.usageMask = nri::BufferUsageBits::SHADER_RESOURCE_STORAGE | nri::BufferUsageBits::SHADER_RESOURCE;
+    NRI_ABORT_ON_FAILURE(NRI.CreateBuffer(*m_Device, bufferDesc, m_OmmGpuOutputBuffers[arrayDataId]));
+    BindBuffersToMemory(NRI, m_Device, &m_OmmGpuOutputBuffers[arrayDataId], 1, m_OmmBakerAllocations, nri::MemoryLocation::DEVICE);
+
+    size_t offset = 0;
+    for (size_t id = 0; id < m_OmmAlphaGeometry.size(); ++id)
+    {
+        AlphaTestedGeometry& geometry = m_OmmAlphaGeometry[id];
+        ommhelper::OmmBakeGeometryDesc& desc = geometry.bakeDesc;
+        ommhelper::GpuBakerBuffer& resource = desc.gpuBuffers[arrayDataId];
+
+        resource.dataSize = desc.gpuBakerPreBuildInfo.dataSizes[arrayDataId];
+        resource.buffer = m_OmmGpuOutputBuffers[arrayDataId];
+        resource.bufferSize = memoryStats.outputTotalSizes[arrayDataId];
+        resource.offset = offset;
+        offset += desc.gpuBakerPreBuildInfo.dataSizes[arrayDataId];
+    }
+}
+
+void Sample::CreateAndBindGpuBakerSatitcBuffer(const OmmGpuBakerPrebuildMemoryStats& memoryStats)
+{
+    const size_t postBakeReadbackDataBegin = (size_t)ommhelper::OmmDataLayout::DescArrayHistogram;
+    const size_t staticDataBegin = (size_t)ommhelper::OmmDataLayout::DescArray;
+    const size_t buffersEnd = (size_t)ommhelper::OmmDataLayout::GpuOutputNum;
+
+    nri::BufferDesc bufferDesc = {};
+    bufferDesc.physicalDeviceMask = 0;
+    bufferDesc.structureStride = sizeof(uint32_t);
+
+    std::vector<nri::Buffer*> gpuBuffers;
+    std::vector<nri::Buffer*> readbackBuffers;
+    for (size_t i = staticDataBegin; i < buffersEnd; ++i)
+    {
+        bufferDesc.size = memoryStats.outputTotalSizes[i];
+        bufferDesc.usageMask = nri::BufferUsageBits::SHADER_RESOURCE_STORAGE | nri::BufferUsageBits::SHADER_RESOURCE;
+        NRI_ABORT_ON_FAILURE(NRI.CreateBuffer(*m_Device, bufferDesc, m_OmmGpuOutputBuffers[i]));
+        gpuBuffers.push_back(m_OmmGpuOutputBuffers[i]);
+    }
+
+    for (size_t i = 0; i < OMM_SDK_TRANSIENT_BUFFER_MAX_NUM; ++i)
+    {
+        bufferDesc.size = memoryStats.maxTransientBufferSizes[i];
+        if (bufferDesc.size)
+        {
+            bufferDesc.usageMask = nri::BufferUsageBits::SHADER_RESOURCE_STORAGE | nri::BufferUsageBits::SHADER_RESOURCE | nri::BufferUsageBits::ARGUMENT_BUFFER;
+            NRI_ABORT_ON_FAILURE(NRI.CreateBuffer(*m_Device, bufferDesc, m_OmmGpuTransientBuffers[i]));
+            gpuBuffers.push_back(m_OmmGpuTransientBuffers[i]);
+        }
+    }
+
+    for (size_t i = postBakeReadbackDataBegin; i < buffersEnd; ++i)
+    {
+        bufferDesc.size = memoryStats.outputTotalSizes[i];
+        bufferDesc.usageMask = nri::BufferUsageBits::NONE;
+        NRI_ABORT_ON_FAILURE(NRI.CreateBuffer(*m_Device, bufferDesc, m_OmmGpuReadbackBuffers[i]));
+        readbackBuffers.push_back(m_OmmGpuReadbackBuffers[i]);
+    }
+
+    { // Bind memories
+        BindBuffersToMemory(NRI, m_Device, gpuBuffers.data(), gpuBuffers.size(), m_OmmBakerAllocations, nri::MemoryLocation::DEVICE);
+        BindBuffersToMemory(NRI, m_Device, readbackBuffers.data(), readbackBuffers.size(), m_OmmBakerAllocations, nri::MemoryLocation::HOST_READBACK);
+    }
+
+    size_t gpuOffsetsPerType[(uint32_t)ommhelper::OmmDataLayout::GpuOutputNum] = {};
+    size_t readBackOffsetsPerType[(uint32_t)ommhelper::OmmDataLayout::GpuOutputNum] = {};
+    for (size_t id = 0; id < m_OmmAlphaGeometry.size(); ++id)
+    {
+        AlphaTestedGeometry& geometry = m_OmmAlphaGeometry[id];
+        ommhelper::OmmBakeGeometryDesc& desc = geometry.bakeDesc;
+        for (uint32_t j = staticDataBegin; j < (uint32_t)ommhelper::OmmDataLayout::GpuOutputNum; ++j)
+        {
             ommhelper::GpuBakerBuffer& resource = desc.gpuBuffers[j];
-            ommhelper::GpuBakerBuffer& readback = desc.readBackBuffers[j];
+            size_t& offset = gpuOffsetsPerType[j];
+
+            desc.gpuBuffers[j].dataSize = desc.gpuBakerPreBuildInfo.dataSizes[j];
             resource.buffer = m_OmmGpuOutputBuffers[j];
-            readback.buffer = m_OmmGpuReadbackBuffers[j];
-
-            resource.bufferSize = memoryStats.outputMaxSizes[j];
-            readback.bufferSize = memoryStats.outputMaxSizes[j];
-
-            resource.offset = readback.offset = offsets[j];
-            readback.dataSize = resource.dataSize;
-
-            offsets[j] += desc.gpuBakerPreBuildInfo.dataSizes[j];
+            resource.bufferSize = memoryStats.outputTotalSizes[j];
+            resource.offset = offset;
+            offset += desc.gpuBakerPreBuildInfo.dataSizes[j];
         }
 
-        for (size_t j = 0; j < m_OmmGpuTransientBuffers.size(); ++j)
+        for (uint32_t j = postBakeReadbackDataBegin; j < (uint32_t)ommhelper::OmmDataLayout::GpuOutputNum; ++j)
+        {
+            ommhelper::GpuBakerBuffer& resource = desc.readBackBuffers[j];
+            size_t& offset = readBackOffsetsPerType[j];
+
+            resource.dataSize = desc.gpuBakerPreBuildInfo.dataSizes[j];
+            resource.buffer = m_OmmGpuReadbackBuffers[j];
+            resource.bufferSize = memoryStats.outputTotalSizes[j];
+            resource.offset = offset;
+            offset += resource.dataSize;
+        }
+
+        for (size_t j = 0; j < OMM_SDK_TRANSIENT_BUFFER_MAX_NUM; ++j)
         {
             desc.transientBuffers[j].buffer = m_OmmGpuTransientBuffers[j];
-            desc.transientBuffers[j].bufferSize = desc.transientBuffers[j].dataSize = memoryStats.maxTransientBufferSizes[j];
+            desc.transientBuffers[j].bufferSize = memoryStats.maxTransientBufferSizes[j];
+            desc.transientBuffers[j].dataSize = memoryStats.maxTransientBufferSizes[j];
             desc.transientBuffers[j].offset = 0;
         }
     }
 }
 
-void Sample::CreateGpuBakerBuffers(const OmmGpuBakerPrebuildMemoryStats& memoryStats)
-{
-    m_OmmGpuOutputBuffers.resize((uint32_t)ommhelper::OmmDataLayout::GpuOutputNum);
-    m_OmmGpuReadbackBuffers.resize((uint32_t)ommhelper::OmmDataLayout::GpuOutputNum);
-
-    nri::BufferDesc bufferDesc = {};
-    bufferDesc.physicalDeviceMask = 0;
-    bufferDesc.structureStride = sizeof(uint32_t);
-    for (uint32_t i = 0; i < (uint32_t)ommhelper::OmmDataLayout::GpuOutputNum; ++i)
-    {
-        bufferDesc.size = memoryStats.outputMaxSizes[i];
-
-        bufferDesc.usageMask = nri::BufferUsageBits::SHADER_RESOURCE_STORAGE | nri::BufferUsageBits::SHADER_RESOURCE;
-        NRI_ABORT_ON_FAILURE(NRI.CreateBuffer(*m_Device, bufferDesc, m_OmmGpuOutputBuffers[i]));
-
-        bufferDesc.usageMask = nri::BufferUsageBits::NONE;
-        NRI_ABORT_ON_FAILURE(NRI.CreateBuffer(*m_Device, bufferDesc, m_OmmGpuReadbackBuffers[i]));
-    }
-
-    for (size_t i = 0; i < omm::Gpu::PreBakeInfo::MAX_TRANSIENT_POOL_BUFFERS; ++i)
-    {
-        bufferDesc.usageMask = nri::BufferUsageBits::SHADER_RESOURCE_STORAGE | nri::BufferUsageBits::SHADER_RESOURCE | nri::BufferUsageBits::ARGUMENT_BUFFER;
-        bufferDesc.size = memoryStats.maxTransientBufferSizes[i];
-        if (bufferDesc.size)
-        {
-            nri::Buffer* buffer = nullptr;
-            NRI_ABORT_ON_FAILURE(NRI.CreateBuffer(*m_Device, bufferDesc, buffer));
-            m_OmmGpuTransientBuffers.push_back(buffer);
-        }
-    }
-
-    { // Bind memories
-        std::vector<nri::Buffer*> deviceMemoryBuffers;
-        deviceMemoryBuffers.insert(deviceMemoryBuffers.end(), m_OmmGpuOutputBuffers.begin(), m_OmmGpuOutputBuffers.end());
-        deviceMemoryBuffers.insert(deviceMemoryBuffers.end(), m_OmmGpuTransientBuffers.begin(), m_OmmGpuTransientBuffers.end());
-        nri::ResourceGroupDesc resourceGroupDesc = {};
-        resourceGroupDesc.buffers = deviceMemoryBuffers.data();
-        resourceGroupDesc.bufferNum = (uint32_t)deviceMemoryBuffers.size();
-        resourceGroupDesc.memoryLocation = nri::MemoryLocation::DEVICE;
-        size_t allocationOffset = m_OmmBakerAllocations.size();
-        m_OmmBakerAllocations.resize(allocationOffset + NRI.CalculateAllocationNumber(*m_Device, resourceGroupDesc), nullptr);
-        NRI_ABORT_ON_FAILURE(NRI.AllocateAndBindMemory(*m_Device, resourceGroupDesc, m_OmmBakerAllocations.data() + allocationOffset));
-
-        resourceGroupDesc.buffers = m_OmmGpuReadbackBuffers.data();
-        resourceGroupDesc.bufferNum = (uint32_t)m_OmmGpuReadbackBuffers.size();
-        resourceGroupDesc.memoryLocation = nri::MemoryLocation::HOST_READBACK;
-        allocationOffset = m_OmmBakerAllocations.size();
-        m_OmmBakerAllocations.resize(allocationOffset + NRI.CalculateAllocationNumber(*m_Device, resourceGroupDesc), nullptr);
-        NRI_ABORT_ON_FAILURE(NRI.AllocateAndBindMemory(*m_Device, resourceGroupDesc, m_OmmBakerAllocations.data() + allocationOffset));
-    }
-}
-
-void Sample::SaveMaskCache(uint32_t id)
+void Sample::SaveMaskCache(const OmmBatch& batch)
 {
     std::string cacheFileName = GetOmmCacheFilename();
     ommhelper::OmmCaching::CreateFolder(m_OmmCacheFolderName.c_str());
+    uint64_t stateMask = ommhelper::OmmCaching::CalculateSateHash(m_OmmBakeDesc);
 
+    for (size_t id = batch.offset; id < batch.offset + batch.count; ++id)
+    {
     AlphaTestedGeometry& geometry = m_OmmAlphaGeometry[id];
+        ommhelper::OmmBakeGeometryDesc& bakeResults = geometry.bakeDesc;
     uint64_t hash = GetInstanceHash(geometry.meshIndex, geometry.materialIndex);
-    uint64_t stateMask = ommhelper::OmmCaching::PackStateMask(m_OmmBakeDesc);
 
-    ommhelper::OmmBakeGeometryDesc& bakeResults = m_OmmBakeInstances[id];
+        bool isDataValid = true;
     ommhelper::OmmCaching::OmmData data;
     for (uint32_t i = 0; i < (uint32_t)ommhelper::OmmDataLayout::CpuMaxNum; ++i)
     {
         data.data[i] = bakeResults.outData[i].data();
         data.sizes[i] = bakeResults.outData[i].size();
+            isDataValid &= data.sizes[i] > 0;
     }
+        if(isDataValid)
     ommhelper::OmmCaching::SaveMasksToDisc(cacheFileName.c_str(), data, stateMask, hash, (uint16_t)bakeResults.outOmmIndexFormat);
 }
+}
 
-void Sample::InitializeOmmGeometryFromCache(std::vector<size_t>& bakeQueue, size_t start, size_t count)
+void Sample::InitializeOmmGeometryFromCache(const OmmBatch& batch, std::vector<ommhelper::OmmBakeGeometryDesc*>& outBakeQueue)
 { // Init geometry from cache. If cache not found add it to baking queue
     if (m_OmmBakeDesc.enableCache == false)
     {
-        for (size_t i = start; i < start + count; ++i)
-            bakeQueue.push_back(i);
+        for (size_t i = batch.offset; i < batch.offset + batch.count; ++i)
+            outBakeQueue.push_back(&m_OmmAlphaGeometry[i].bakeDesc);
         return;
     }
 
     printf("Read cache. ");
-    for (size_t i = start; i < start + count; ++i)
+    uint64_t stateMask = ommhelper::OmmCaching::CalculateSateHash(m_OmmBakeDesc);
+    for (size_t i = batch.offset; i < batch.offset + batch.count; ++i)
     {
-        ommhelper::OmmBakeGeometryDesc& instance = m_OmmBakeInstances[i];
         AlphaTestedGeometry& geometry = m_OmmAlphaGeometry[i];
+        ommhelper::OmmBakeGeometryDesc& instance = geometry.bakeDesc;
 
-        uint64_t stateMask = ommhelper::OmmCaching::PackStateMask(m_OmmBakeDesc);
         uint64_t hash = GetInstanceHash(geometry.meshIndex, geometry.materialIndex);
         ommhelper::OmmCaching::OmmData data = {};
         if (ommhelper::OmmCaching::ReadMaskFromCache(GetOmmCacheFilename().c_str(), data, stateMask, hash, nullptr))
@@ -1860,34 +1945,52 @@ void Sample::InitializeOmmGeometryFromCache(std::vector<size_t>& bakeQueue, size
             }
             ommhelper::OmmCaching::ReadMaskFromCache(GetOmmCacheFilename().c_str(), data, stateMask, hash, (uint16_t*)&instance.outOmmIndexFormat);
             instance.outOmmIndexStride = instance.outOmmIndexFormat == nri::Format::R16_UINT ? sizeof(uint16_t) : sizeof(uint32_t);
-            instance.outDescArrayHistogramCount = uint32_t(data.sizes[(uint32_t)ommhelper::OmmDataLayout::DescArrayHistogram] / (uint64_t)sizeof(omm::Cpu::OpacityMicromapUsageCount));
-            instance.outIndexHistogramCount = uint32_t(data.sizes[(uint32_t)ommhelper::OmmDataLayout::IndexHistogram] / (uint64_t)sizeof(omm::Cpu::OpacityMicromapUsageCount));
+            instance.outDescArrayHistogramCount = uint32_t(data.sizes[(uint32_t)ommhelper::OmmDataLayout::DescArrayHistogram] / (uint64_t)sizeof(ommCpuOpacityMicromapUsageCount));
+            instance.outIndexHistogramCount = uint32_t(data.sizes[(uint32_t)ommhelper::OmmDataLayout::IndexHistogram] / (uint64_t)sizeof(ommCpuOpacityMicromapUsageCount));
         }
         else
-            bakeQueue.push_back(i);
+            outBakeQueue.push_back(&instance);
     }
 }
 
-void Sample::BakeOmmGpu(size_t* queue, size_t count, const OmmGpuBakerPrebuildMemoryStats& memoryStats)
-{
-    if (m_OmmGpuOutputBuffers.empty())
-        CreateGpuBakerBuffers(memoryStats);
-
-    BindGpuBakerBuffers(memoryStats, queue, count);
-
-    std::vector<ommhelper::OmmBakeGeometryDesc*> batch;
-    for (size_t i = 0; i < count; ++i)
-        batch.push_back(&m_OmmBakeInstances[queue[i]]);
-
+void Sample::RunOmmSetupPass(ommhelper::OmmBakeGeometryDesc** queue, size_t count, OmmGpuBakerPrebuildMemoryStats& memoryStats)
+{ // Run prepass to get correct size of omm array data buffer
     nri::CommandBuffer* commandBuffer = m_OmmContext.commandBuffer;
     NRI.ResetCommandAllocator(*m_OmmContext.commandAllocator);
     NRI.BeginCommandBuffer(*commandBuffer, nullptr, nri::WHOLE_DEVICE_GROUP);
     {
-        m_OmmHelper.BakeOpacityMicroMapsGpu(commandBuffer, batch[0], batch.size(), m_OmmBakeDesc);
+        m_OmmHelper.BakeOpacityMicroMapsGpu(commandBuffer, queue, count, m_OmmBakeDesc, ommhelper::OmmGpuBakerPass::Setup);
+        CopyBatchToReadBackBuffer(NRI, commandBuffer, *queue[0], *queue[count - 1], (uint32_t)ommhelper::OmmDataLayout::GpuPostBuildInfo);
+    }
+    NRI.EndCommandBuffer(*commandBuffer);
 
-        CopyBatchToReadBackBuffer(NRI, commandBuffer, *batch.back(), (uint32_t)ommhelper::OmmDataLayout::DescArrayHistogram);
-        CopyBatchToReadBackBuffer(NRI, commandBuffer, *batch.back(), (uint32_t)ommhelper::OmmDataLayout::IndexHistogram);
-        CopyBatchToReadBackBuffer(NRI, commandBuffer, *batch.back(), (uint32_t)ommhelper::OmmDataLayout::GpuPostBuildInfo);
+    nri::WorkSubmissionDesc workSubmissionDesc = {};
+    workSubmissionDesc.commandBuffers = &commandBuffer;
+    workSubmissionDesc.commandBufferNum = 1;
+    NRI.SubmitQueueWork(*m_CommandQueue, workSubmissionDesc, m_OmmContext.deviceSemaphore);
+    NRI.WaitForSemaphore(*m_CommandQueue, *m_OmmContext.deviceSemaphore);
+    m_OmmHelper.GpuPostBakeCleanUp();
+
+    for (size_t i = 0; i < count; ++i)
+    { // Get actual data sizes from postbuild info
+        ommhelper::OmmBakeGeometryDesc& desc = *queue[i];
+        CopyFromReadBackBuffer(NRI, desc, (uint32_t)ommhelper::OmmDataLayout::GpuPostBuildInfo);
+        ommGpuPostBakeInfo postbildInfo = *(ommGpuPostBakeInfo*)desc.outData[(uint32_t)ommhelper::OmmDataLayout::GpuPostBuildInfo].data();
+        desc.gpuBakerPreBuildInfo.dataSizes[(uint32_t)ommhelper::OmmDataLayout::ArrayData] = postbildInfo.outOmmArraySizeInBytes;
+    }
+    memoryStats = GetGpuBakerPrebuildMemoryStats(true);
+}
+
+void Sample::BakeOmmGpu(std::vector<ommhelper::OmmBakeGeometryDesc*>& batch)
+{
+    nri::CommandBuffer* commandBuffer = m_OmmContext.commandBuffer;
+    NRI.ResetCommandAllocator(*m_OmmContext.commandAllocator);
+    NRI.BeginCommandBuffer(*commandBuffer, nullptr, nri::WHOLE_DEVICE_GROUP);
+    {
+        m_OmmHelper.BakeOpacityMicroMapsGpu(commandBuffer, batch.data(), batch.size(), m_OmmBakeDesc, ommhelper::OmmGpuBakerPass::Bake);
+        CopyBatchToReadBackBuffer(NRI, commandBuffer, *batch[0], *batch.back(), (uint32_t)ommhelper::OmmDataLayout::DescArrayHistogram);
+        CopyBatchToReadBackBuffer(NRI, commandBuffer, *batch[0], *batch.back(), (uint32_t)ommhelper::OmmDataLayout::IndexHistogram);
+        CopyBatchToReadBackBuffer(NRI, commandBuffer, *batch[0], *batch.back(), (uint32_t)ommhelper::OmmDataLayout::GpuPostBuildInfo);
     }
     NRI.EndCommandBuffer(*commandBuffer);
 
@@ -1905,12 +2008,11 @@ void Sample::BakeOmmGpu(size_t* queue, size_t count, const OmmGpuBakerPrebuildMe
         NRI.ResetCommandAllocator(*m_OmmContext.commandAllocator);
         NRI.BeginCommandBuffer(*commandBuffer, nullptr, nri::WHOLE_DEVICE_GROUP);
         {
-            for (size_t i = 0; i < count; ++i)
+            for (size_t i = 0; i < batch.size(); ++i)
             { // Get actual data sizes from postbuild info
-                size_t id = queue[i];
-                ommhelper::OmmBakeGeometryDesc& desc = m_OmmBakeInstances[id];
+                ommhelper::OmmBakeGeometryDesc& desc = *batch[i];
                 CopyFromReadBackBuffer(NRI, desc, (uint32_t)ommhelper::OmmDataLayout::GpuPostBuildInfo);
-                omm::Gpu::PostBakeInfo postbildInfo = *(omm::Gpu::PostBakeInfo*)desc.outData[(uint32_t)ommhelper::OmmDataLayout::GpuPostBuildInfo].data();
+                ommGpuPostBakeInfo postbildInfo = *(ommGpuPostBakeInfo*)desc.outData[(uint32_t)ommhelper::OmmDataLayout::GpuPostBuildInfo].data();
 
                 desc.gpuBuffers[(uint32_t)ommhelper::OmmDataLayout::ArrayData].dataSize = postbildInfo.outOmmArraySizeInBytes;
                 desc.readBackBuffers[(uint32_t)ommhelper::OmmDataLayout::ArrayData].dataSize = postbildInfo.outOmmArraySizeInBytes;
@@ -1919,9 +2021,9 @@ void Sample::BakeOmmGpu(size_t* queue, size_t count, const OmmGpuBakerPrebuildMe
             }
 
             {
-                CopyBatchToReadBackBuffer(NRI, commandBuffer, *batch.back(), (uint32_t)ommhelper::OmmDataLayout::ArrayData);
-                CopyBatchToReadBackBuffer(NRI, commandBuffer, *batch.back(), (uint32_t)ommhelper::OmmDataLayout::DescArray);
-                CopyBatchToReadBackBuffer(NRI, commandBuffer, *batch.back(), (uint32_t)ommhelper::OmmDataLayout::Indices);
+                CopyBatchToReadBackBuffer(NRI, commandBuffer, *batch[0], *batch.back(), (uint32_t)ommhelper::OmmDataLayout::ArrayData);
+                CopyBatchToReadBackBuffer(NRI, commandBuffer, *batch[0], *batch.back(), (uint32_t)ommhelper::OmmDataLayout::DescArray);
+                CopyBatchToReadBackBuffer(NRI, commandBuffer, *batch[0], *batch.back(), (uint32_t)ommhelper::OmmDataLayout::Indices);
             }
         }
         NRI.EndCommandBuffer(*commandBuffer);
@@ -1929,10 +2031,9 @@ void Sample::BakeOmmGpu(size_t* queue, size_t count, const OmmGpuBakerPrebuildMe
         NRI.WaitForSemaphore(*m_CommandQueue, *m_OmmContext.deviceSemaphore);
     }
 
-    for (size_t i = 0; i < count; ++i)
+    for (size_t i = 0; i < batch.size(); ++i)
     {
-        size_t id = queue[i];
-        ommhelper::OmmBakeGeometryDesc& desc = m_OmmBakeInstances[id];
+        ommhelper::OmmBakeGeometryDesc& desc = *batch[i];
         CopyFromReadBackBuffer(NRI, desc, (uint32_t)ommhelper::OmmDataLayout::DescArrayHistogram);
         CopyFromReadBackBuffer(NRI, desc, (uint32_t)ommhelper::OmmDataLayout::IndexHistogram);
 
@@ -1945,64 +2046,81 @@ void Sample::BakeOmmGpu(size_t* queue, size_t count, const OmmGpuBakerPrebuildMe
     }
 }
 
-void Sample::BakeOmmCpu(size_t* queue, size_t count)
-{
-    for (size_t i = 0; i < count; ++i)
-    {
-        size_t id = queue[i];
-        ommhelper::OmmBakeGeometryDesc* instance = &m_OmmBakeInstances[id];
-        m_OmmHelper.BakeOpacityMicroMapsCpu(instance, 1, m_OmmBakeDesc);
-    }
-}
-
 void Sample::RebuildOmmGeometry()
 {
     NRI.WaitForIdle(*m_CommandQueue);
 
     ReleaseMaskedGeometry();
 
-    FillOmmBakerInputs(m_OmmBakeInstances);
-    m_OmmGeometryBuildQueue.resize(m_OmmBakeInstances.size());
-
+    FillOmmBakerInputs();
     OmmGpuBakerPrebuildMemoryStats memoryStats = {};
-    bool isGpuBaker = m_OmmBakeDesc.type == ommhelper::OmmBakerType::GPU;
-    if (isGpuBaker)
-    { // Divide baking queue by memory requirments and batch size
-        m_OmmHelper.GetGpuBakerPrebuildInfo(m_OmmBakeInstances.data(), m_OmmBakeInstances.size(), m_OmmBakeDesc);
-        memoryStats = GetGpuBakerPrebuildMemoryStats();
-    }
-    std::vector<OmmBatch> batches = GetGpuBakerBatches(m_OmmBakeInstances, memoryStats, isGpuBaker ? m_OmmWorkloadBatchSize : 1);
+    std::vector<OmmBatch> batches = GetGpuBakerBatches(m_OmmAlphaGeometry, memoryStats, 1);
 
-    for (size_t i = 0; i < batches.size(); ++i)
+    if (m_OmmBakeDesc.type == ommhelper::OmmBakerType::GPU)
     {
-        printf("\r%s\r[OMM] Batch [%llu / %llu]: ", std::string(100, ' ').c_str(), i + 1, batches.size());
-        std::vector<size_t> bakeQueue;
-        InitializeOmmGeometryFromCache(bakeQueue, batches[i].offset, batches[i].count);
+        std::vector<ommhelper::OmmBakeGeometryDesc*> queue;
+        uint64_t stateMask = ommhelper::OmmCaching::CalculateSateHash(m_OmmBakeDesc);
+
+        for (size_t instanceId = 0; instanceId < m_OmmAlphaGeometry.size(); ++instanceId)
+        { // skip prepass for instances with cache
+            AlphaTestedGeometry& geometry = m_OmmAlphaGeometry[instanceId];
+            uint64_t hash = GetInstanceHash(geometry.meshIndex, geometry.materialIndex);
+            if (ommhelper::OmmCaching::LookForCache(GetOmmCacheFilename().c_str(), stateMask, hash) && m_OmmBakeDesc.enableCache)
+                continue;
+            queue.push_back(&geometry.bakeDesc);
+        }
+
+        if (queue.empty() == false)
+        { // perform setup pass
+            m_OmmHelper.GetGpuBakerPrebuildInfo(queue.data(), queue.size(), m_OmmBakeDesc);
+            memoryStats = GetGpuBakerPrebuildMemoryStats(false); // arrayData size calculation is conservative here
+
+            CreateAndBindGpuBakerSatitcBuffer(memoryStats); // create buffers which sizes are correctly calculated in GetGpuBakerPrebuildInfo()
+            { // get actual arrayData buffer sizes. GetGpuBakerPrebuildInfo() returns conservative arrayData size estimation
+                RunOmmSetupPass(queue.data(), queue.size(), memoryStats);
+            }
+            CreateAndBindGpuBakerArrayDataBuffer(memoryStats);
+            
+            if (m_OmmBakeDesc.enableCache)
+                CreateAndBindGpuBakerReadbackBuffer(memoryStats);
+
+            batches.clear(); batches.push_back({ 0, m_OmmAlphaGeometry.size() });
+        }
+    }
+
+    for (size_t batchId = 0; batchId < batches.size(); ++batchId)
+    {
+        const OmmBatch& batch = batches[batchId];
+        printf("\r%s\r[OMM] Batch [%llu / %llu]: ", std::string(100, ' ').c_str(), batchId + 1, batches.size());
+        std::vector<ommhelper::OmmBakeGeometryDesc*> bakeQueue;
+        InitializeOmmGeometryFromCache(batch, bakeQueue);
 
         if (!bakeQueue.empty())
         {
             printf("Bake. ");
             if (m_OmmBakeDesc.type == ommhelper::OmmBakerType::GPU)
-                BakeOmmGpu(bakeQueue.data(), bakeQueue.size(), memoryStats);
+                BakeOmmGpu(bakeQueue);
             else
-                BakeOmmCpu(bakeQueue.data(), bakeQueue.size()); 
+                m_OmmHelper.BakeOpacityMicroMapsCpu(bakeQueue.data(), bakeQueue.size(), m_OmmBakeDesc);
 
             if (m_OmmBakeDesc.enableCache)
             {
                 printf("Save cache. ");
-                for (size_t k = 0; k < bakeQueue.size(); ++k)
-                    SaveMaskCache((uint32_t)bakeQueue[k]);
+                SaveMaskCache(batch);
             }
         }
 
         if (m_OmmBakeDesc.disableBlasBuild == false)
         {
             printf("Build. ");
+
+            std::vector<ommhelper::MaskedGeometryBuildDesc*> buildQueue = {};
+            FillOmmBlasBuildQueue(batch, buildQueue);
+
             NRI.ResetCommandAllocator(*m_OmmContext.commandAllocator);
             NRI.BeginCommandBuffer(*m_OmmContext.commandBuffer, nullptr, nri::WHOLE_DEVICE_GROUP);
             {
-                FillOmmBlasBuildInputs(batches[i].offset, batches[i].count);
-                m_OmmHelper.BuildMaskedGeometry(m_OmmGeometryBuildQueue.data() + batches[i].offset, batches[i].count, m_OmmContext.commandBuffer);
+                m_OmmHelper.BuildMaskedGeometry(buildQueue.data(), buildQueue.size(), m_OmmContext.commandBuffer);
             }
             NRI.EndCommandBuffer(*m_OmmContext.commandBuffer);
 
@@ -2011,6 +2129,19 @@ void Sample::RebuildOmmGeometry()
             workSubmissionDesc.commandBufferNum = 1;
             NRI.SubmitQueueWork(*m_CommandQueue, workSubmissionDesc, m_OmmContext.deviceSemaphore);
             NRI.WaitForSemaphore(*m_CommandQueue, *m_OmmContext.deviceSemaphore);
+
+            for (size_t id = batch.offset; id < batch.offset + batch.count; ++id)
+            {
+                AlphaTestedGeometry& geometry = m_OmmAlphaGeometry[id];
+                ommhelper::MaskedGeometryBuildDesc& buildDesc = geometry.buildDesc;
+                if (!buildDesc.outputs.blas)
+                    continue;
+
+                uint64_t mask = GetInstanceHash(m_OmmAlphaGeometry[id].meshIndex, m_OmmAlphaGeometry[id].materialIndex);
+                OmmBlas ommBlas = { buildDesc.outputs.blas, buildDesc.outputs.ommArray };
+                m_InstanceMaskToMaskedBlasData.insert(std::make_pair(mask, ommBlas));
+                m_MaskedBlasses.push_back({ buildDesc.outputs.blas, buildDesc.outputs.ommArray });
+            }
         }
 
         // Free cpu side memories with batch lifecycle
@@ -2024,15 +2155,6 @@ void Sample::RebuildOmmGeometry()
     }
     printf("\n");
 
-    for (size_t i = 0; i < m_OmmGeometryBuildQueue.size(); ++i)
-    {
-        if (!m_OmmGeometryBuildQueue[i].outputs.blas)
-            continue;
-        uint64_t mask = GetInstanceMask(m_OmmAlphaGeometry[i].meshIndex, m_OmmAlphaGeometry[i].materialIndex);
-        OmmBlas ommBlas = { m_OmmGeometryBuildQueue[i].outputs.blas, m_OmmGeometryBuildQueue[i].outputs.ommArray };
-        m_InstanceMaskToMaskedBlasData.insert(std::make_pair(mask, ommBlas));
-        m_MaskedBlasses.push_back({ m_OmmGeometryBuildQueue[i].outputs.blas, m_OmmGeometryBuildQueue[i].outputs.ommArray });
-    }
     ReleaseBakingResources();
 }
 
@@ -2048,28 +2170,34 @@ void Sample::ReleaseMaskedGeometry()
 
 void Sample::ReleaseBakingResources()
 {
-    m_OmmBakeInstances.resize(0); m_OmmBakeInstances.shrink_to_fit();
-    m_OmmGeometryBuildQueue.resize(0); m_OmmGeometryBuildQueue.shrink_to_fit();
+    for (AlphaTestedGeometry& geometry : m_OmmAlphaGeometry)
+    {
+        geometry.bakeDesc = {};
+        geometry.buildDesc = {};
+    }
 
     m_OmmRawAlphaChannelForCpuBaker.resize(0);
     m_OmmRawAlphaChannelForCpuBaker.shrink_to_fit();
 
     // Destroy buffers
-    for (auto& buffer : m_OmmGpuOutputBuffers)
-        NRI.DestroyBuffer(*buffer);
-    m_OmmGpuOutputBuffers.resize(0); m_OmmGpuOutputBuffers.shrink_to_fit();
-
-    for (auto& buffer : m_OmmGpuReadbackBuffers)
-        NRI.DestroyBuffer(*buffer);
-    m_OmmGpuReadbackBuffers.resize(0); m_OmmGpuReadbackBuffers.shrink_to_fit();
+    auto DestroyBuffers = [](NRIInterface& nri, nri::Buffer** buffers, uint32_t count)
+    {
+        for (uint32_t i = 0; i < count; ++i)
+        {
+            if (buffers[i])
+            {
+                nri.DestroyBuffer(*buffers[i]);
+                buffers[i] = nullptr;
+            }
+        }
+    };
+    DestroyBuffers(NRI, m_OmmGpuOutputBuffers, (uint32_t)ommhelper::OmmDataLayout::GpuOutputNum);
+    DestroyBuffers(NRI, m_OmmGpuReadbackBuffers, (uint32_t)ommhelper::OmmDataLayout::GpuOutputNum);
+    DestroyBuffers(NRI, m_OmmGpuTransientBuffers, OMM_SDK_TRANSIENT_BUFFER_MAX_NUM);
 
     for (auto& buffer : m_OmmCpuUploadBuffers)
         NRI.DestroyBuffer(*buffer);
     m_OmmCpuUploadBuffers.resize(0); m_OmmCpuUploadBuffers.shrink_to_fit();
-
-    for (auto& buffer : m_OmmGpuTransientBuffers)
-        NRI.DestroyBuffer(*buffer);
-    m_OmmGpuTransientBuffers.resize(0); m_OmmGpuTransientBuffers.shrink_to_fit();
 
     // Release memories
     for (auto& memory : m_OmmTmpAllocations)
@@ -2083,8 +2211,43 @@ void Sample::ReleaseBakingResources()
     m_OmmHelper.GpuPostBakeCleanUp();
 }
 
+bool IsRebuildAvailable(ommhelper::OmmBakeDesc& updated, ommhelper::OmmBakeDesc& current)
+{
+    bool result = false;
+    result |= updated.subdivisionLevel != current.subdivisionLevel;
+    result |= updated.mipBias != current.mipBias;
+    result |= updated.dynamicSubdivisionScale != current.dynamicSubdivisionScale;
+    result |= updated.filter != current.filter;
+    result |= updated.format != current.format;
+    
+    result |= updated.type != current.type;
+    if (current.type == ommhelper::OmmBakerType::GPU)
+    {
+        result |= updated.gpuFlags.computeOnlyWorkload != current.gpuFlags.computeOnlyWorkload;
+        result |= updated.gpuFlags.enablePostBuildInfo != current.gpuFlags.enablePostBuildInfo;
+        result |= updated.gpuFlags.enableTexCoordDeduplication != current.gpuFlags.enableTexCoordDeduplication;
+        result |= updated.gpuFlags.force32bitIndices != current.gpuFlags.force32bitIndices;
+        result |= updated.gpuFlags.enableSpecialIndices != current.gpuFlags.enableSpecialIndices;
+    }
+    else
+    {
+        result |= updated.mipCount != current.mipCount;
+        result |= updated.cpuFlags.enableInternalThreads != current.cpuFlags.enableInternalThreads;
+        result |= updated.cpuFlags.enableSpecialIndices != current.cpuFlags.enableSpecialIndices;
+        result |= updated.cpuFlags.enableDuplicateDetection != current.cpuFlags.enableDuplicateDetection;
+        result |= updated.cpuFlags.enableNearDuplicateDetection != current.cpuFlags.enableNearDuplicateDetection;
+        result |= updated.cpuFlags.force32bitIndices != current.cpuFlags.force32bitIndices;
+    }
+
+    result |= ((current.enableCache == false) && updated.enableCache);
+
+    return result;
+}
+
 void Sample::AppendOmmImguiSettings()
 {
+    static ommhelper::OmmBakeDesc bakeDesc = m_OmmBakeDesc;
+
     ImGui::PushStyleColor(ImGuiCol_Text, UI_HEADER);
     ImGui::PushStyleColor(ImGuiCol_Header, UI_HEADER_BACKGROUND);
     bool isUnfolded = ImGui::CollapsingHeader("VISIBILITY MASKS", ImGuiTreeNodeFlags_CollapsingHeader | ImGuiTreeNodeFlags_DefaultOpen);
@@ -2109,24 +2272,16 @@ void Sample::AppendOmmImguiSettings()
             ImGui::Separator();
             ImGui::Text("OMM Baking Settings:");
 
-            #if _DEBUG
-            {
-                ImGui::PushItemWidth(ImGui::CalcItemWidth() * 0.33f);
-                int batchSize = (int)m_OmmWorkloadBatchSize;
-                ImGui::InputInt("OmmWorkloadBatchMaxSize", &batchSize);
-                m_OmmWorkloadBatchSize = (size_t)(batchSize < 1 ? 1 : batchSize);
-                ImGui::PopItemWidth();
-            }
-            #endif//_DEBUG
-
             static const char* ommBakerTypes[] = { "GPU", "CPU", };
-            static int ommBakerTypeSelection = (int)m_OmmBakeDesc.type;
+            static int ommBakerTypeSelection = (int)bakeDesc.type;
             ImGui::Combo("BakerType", &ommBakerTypeSelection, ommBakerTypes, helper::GetCountOf(ommBakerTypes));
 
             int32_t maxSubdivisionLevel = 12;
-            if (ommBakerTypeSelection == 1)//if CPU
+            float maxSubdivisionScale = 12.0f;
+            bool isCpuBaker = ommBakerTypeSelection == 1;
+            if (isCpuBaker)//if CPU
             {
-                ommhelper::CpuBakerFlags& cpuFlags = m_OmmBakeDesc.cpuFlags;
+                ommhelper::CpuBakerFlags& cpuFlags = bakeDesc.cpuFlags;
                 ImGui::Checkbox("SpecialIndices", &cpuFlags.enableSpecialIndices);
                 ImGui::SameLine();
                 ImGui::Checkbox("InternalThreads", &cpuFlags.enableInternalThreads);
@@ -2137,58 +2292,92 @@ void Sample::AppendOmmImguiSettings()
             }
             else //if GPU
             {
-                maxSubdivisionLevel = 9;//gpu baker is currently limited to level 9
-                ommhelper::GpuBakerFlags& gpuFlags = m_OmmBakeDesc.gpuFlags;
+                ommhelper::GpuBakerFlags& gpuFlags = bakeDesc.gpuFlags;
+                maxSubdivisionLevel = gpuFlags.computeOnlyWorkload ? 10 : 9;//gpu baker is currently limited to level 9. 10 in compute only regime
                 ImGui::Checkbox("SpecialIndices", &gpuFlags.enableSpecialIndices);
                 ImGui::SameLine();
                 ImGui::Checkbox("Compute Only", &gpuFlags.computeOnlyWorkload);
+                maxSubdivisionScale = gpuFlags.computeOnlyWorkload ? maxSubdivisionScale : 9.0f;
             }
 
-            static int ommFormatSelection = (int)m_OmmBakeDesc.format;
+            static int ommFormatSelection = (int)bakeDesc.format;
             static const char* ommFormatNames[] = { "OC1_2_STATE", "OC1_4_STATE", };
             ImGui::PushItemWidth(ImGui::CalcItemWidth() * 0.66f);
             ImGui::Combo("OMM Format", &ommFormatSelection, ommFormatNames, helper::GetCountOf(ommFormatNames));
             ImGui::PopItemWidth();
 
-            static int ommFilterSelection = (int)m_OmmBakeDesc.filter;
+            static int ommFilterSelection = (int)bakeDesc.filter;
             static const char* vmFilterNames[] = { "Nearest", "Linear", };
             ImGui::PushItemWidth(ImGui::CalcItemWidth() * 0.66f);
             ImGui::Combo("Alpha Test Filter", &ommFilterSelection, vmFilterNames, helper::GetCountOf(ommFormatNames));
             ImGui::PopItemWidth();
 
-            static int mipBias = m_OmmBakeDesc.mipBias;
-            static int subdivisionLevel = m_OmmBakeDesc.subdivisionLevel;
+            static int mipBias = bakeDesc.mipBias;
+            static int mipCount = bakeDesc.mipCount;
+            static int subdivisionLevel = bakeDesc.subdivisionLevel;
 
-            ImGui::PushItemWidth(ImGui::CalcItemWidth() * 0.66f);
-            ImGui::SliderFloat("Subdivision Scale", &m_OmmBakeDesc.dynamicSubdivisionScale, 0.0f, 100.0f);
-            ImGui::PopItemWidth();
+            static float subdivisionScale = bakeDesc.dynamicSubdivisionScale;
+            static bool enableDynamicSubdivisionScale = true;
+            if (enableDynamicSubdivisionScale)
+            {
+                ImGui::PushItemWidth(ImGui::CalcItemWidth() * 0.66f);
+                ImGui::SliderFloat("Subdivision Scale", &subdivisionScale, 0.1f, maxSubdivisionScale, "%.1f");
+                ImGui::PopItemWidth();
+                ImGui::SameLine();
+            }
+
+            ImGui::Checkbox(enableDynamicSubdivisionScale ? " " : "Enable Subdivision Scale", &enableDynamicSubdivisionScale);
+            bakeDesc.dynamicSubdivisionScale = enableDynamicSubdivisionScale ? subdivisionScale : 0.0f;
 
             ImGui::PushItemWidth(ImGui::CalcItemWidth() * 0.33f);
-            ImGui::InputInt("Max Subdivision Level", &subdivisionLevel);
+            static char buffer[128];
+            sprintf(buffer, "Max Subdivision Level [1 : %d] ", maxSubdivisionLevel);
+            ImGui::InputInt(buffer, &subdivisionLevel);
             ImGui::PopItemWidth();
             subdivisionLevel = subdivisionLevel < 1 ? 1 : subdivisionLevel;
             subdivisionLevel = subdivisionLevel > maxSubdivisionLevel ? maxSubdivisionLevel : subdivisionLevel;
-
 
             ImGui::PushItemWidth(ImGui::CalcItemWidth() * 0.33f);
             ImGui::InputInt("Mip Bias (if applicable)", &mipBias);
             ImGui::PopItemWidth();
             mipBias = mipBias < 0 ? 0 : mipBias;
             mipBias = mipBias > 15 ? 15 : mipBias;
-            static bool enableCaching = m_OmmBakeDesc.enableCache;
+            static bool enableCaching = bakeDesc.enableCache;
 
-            m_OmmBakeDesc.format = ommhelper::OmmFormats(ommFormatSelection);
-            m_OmmBakeDesc.filter = ommhelper::OmmBakeFilter(ommFilterSelection);
-            m_OmmBakeDesc.subdivisionLevel = subdivisionLevel;
-            m_OmmBakeDesc.mipBias = mipBias;
-            m_OmmBakeDesc.type = ommhelper::OmmBakerType(ommBakerTypeSelection);
-            m_OmmBakeDesc.enableCache = enableCaching;
+            if (isCpuBaker)
+            {
+                ImGui::PushItemWidth(ImGui::CalcItemWidth() * 0.33f);
+                ImGui::InputInt("Mip Count (if applicable)", &mipCount);
+                ImGui::PopItemWidth();
+                int maxMipRange = OMM_MAX_MIP_NUM - mipBias;
+                mipCount = mipCount < 1 ? 1 : mipCount;
+                mipCount = mipCount > maxMipRange ? maxMipRange : mipCount;
+            }
+
+            bakeDesc.format = ommhelper::OmmFormats(ommFormatSelection);
+            bakeDesc.filter = ommhelper::OmmBakeFilter(ommFilterSelection);
+            bakeDesc.subdivisionLevel = subdivisionLevel;
+            bakeDesc.mipBias = mipBias;
+            bakeDesc.mipCount = mipCount;
+            bakeDesc.type = ommhelper::OmmBakerType(ommBakerTypeSelection);
+            bakeDesc.enableCache = enableCaching;
+
+            bool isRebuildAvailable = IsRebuildAvailable(bakeDesc, m_OmmBakeDesc);
 
             static uint32_t frameId = 0;
+            static ImU32 greyColor = ImGui::GetColorU32(ImVec4(0.3f, 0.3f, 0.3f, 1.0f));
+            static ImU32 greenColor = ImGui::GetColorU32(ImVec4(0.0f, 0.6f, 0.0f, 1.0f));
             bool forceRebuild = frameId == m_OmmBakeDesc.buildFrameId;
             {
+                ImU32 buttonColor = isRebuildAvailable ? greenColor : greyColor;
+                ImGui::PushStyleColor(ImGuiCol_::ImGuiCol_Button, buttonColor);
                 if (ImGui::Button("Bake OMMs") || forceRebuild)
+                {
+                    m_OmmBakeDesc = bakeDesc;
                     RebuildOmmGeometry();
+                }
+                ImGui::PopStyleColor();
+
                 ImGui::SameLine();
                 ImGui::Checkbox("Use OMM Cache", &enableCaching);
             }

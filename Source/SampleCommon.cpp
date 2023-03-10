@@ -2622,7 +2622,7 @@ void Sample::BuildTopLevelAccelerationStructure(nri::CommandBuffer& commandBuffe
         if (m_ShowOnlyAlphaTestedGeometry && material.IsAlphaOpaque() == false)
             continue;
 
-        nri::AccelerationStructure* blas = m_EnableOmm ? GetMaskedBlas(GetInstanceMask(instance.meshIndex, instance.materialIndex)) : nullptr;
+        nri::AccelerationStructure* blas = m_EnableOmm ? GetMaskedBlas(GetInstanceHash(instance.meshIndex, instance.materialIndex)) : nullptr;
 
         assert(worldInstanceNum <= INSTANCE_ID_MASK);
 

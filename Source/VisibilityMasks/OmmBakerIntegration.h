@@ -18,6 +18,8 @@ license agreement from NVIDIA CORPORATION is strictly prohibited.
 #define OMM_SUPPORTS_CPP17 (1)
 #include "omm.h"
 
+#define OMM_SDK_TRANSIENT_BUFFER_MAX_NUM 8 // TODO: replace with a var from omm sdk
+
 struct TextureResource
 {
     nri::Texture* texture;
@@ -50,7 +52,7 @@ struct PrebuildInfo
     uint64_t ommDescArrayHistogramSize;
     uint64_t ommIndexHistogramSize;
     uint64_t postBuildInfoSize;
-    uint64_t transientBufferSizes[omm::Gpu::PreBakeInfo::MAX_TRANSIENT_POOL_BUFFERS];
+    uint64_t transientBufferSizes[OMM_SDK_TRANSIENT_BUFFER_MAX_NUM];
 
     uint32_t indexCount;
     nri::Format indexFormat;
@@ -58,8 +60,8 @@ struct PrebuildInfo
 
 enum class BakerAlphaMode : uint32_t
 {
-    Test = (uint32_t)omm::AlphaMode::Test,
-    Blend = (uint32_t)omm::AlphaMode::Blend,
+    Test = (uint32_t)ommAlphaMode_Test,
+    Blend = (uint32_t)ommAlphaMode_Blend,
     Count
 };
 
@@ -71,39 +73,34 @@ enum class BakerOmmFormat : uint16_t
 
 enum class BakerScratchMemoryBudget : uint64_t
 {
-    Undefined = (uint64_t)omm::Gpu::ScratchMemoryBudget::Undefined,
+    Undefined = (uint64_t)ommGpuScratchMemoryBudget_Undefined,
 
-    MB_4 = (uint64_t)omm::Gpu::ScratchMemoryBudget::MB_4,
-    MB_32 = (uint64_t)omm::Gpu::ScratchMemoryBudget::MB_32,
-    MB_64 = (uint64_t)omm::Gpu::ScratchMemoryBudget::MB_64,
-    MB_128 = (uint64_t)omm::Gpu::ScratchMemoryBudget::MB_128,
-    MB_256 = (uint64_t)omm::Gpu::ScratchMemoryBudget::MB_256,
-    MB_512 = (uint64_t)omm::Gpu::ScratchMemoryBudget::MB_512,
-    MB_1024 = (uint64_t)omm::Gpu::ScratchMemoryBudget::MB_1024,
-    MB_2048 = (uint64_t)omm::Gpu::ScratchMemoryBudget::MB_2048,
-    MB_4096 = (uint64_t)omm::Gpu::ScratchMemoryBudget::MB_4096,
+    MB_4 = (uint64_t)ommGpuScratchMemoryBudget_MB_4,
+    MB_32 = (uint64_t)ommGpuScratchMemoryBudget_MB_32,
+    MB_64 = (uint64_t)ommGpuScratchMemoryBudget_MB_64,
+    MB_128 = (uint64_t)ommGpuScratchMemoryBudget_MB_128,
+    MB_256 = (uint64_t)ommGpuScratchMemoryBudget_MB_256,
+    MB_512 = (uint64_t)ommGpuScratchMemoryBudget_MB_512,
+    MB_1024 = (uint64_t)ommGpuScratchMemoryBudget_MB_1024,
 
-    LowMemory = (uint64_t)omm::Gpu::ScratchMemoryBudget::LowMemory,
-    HighMemory = (uint64_t)omm::Gpu::ScratchMemoryBudget::HighMemory,
-
-    Default = (uint64_t)omm::Gpu::ScratchMemoryBudget::Default,
+    Default = (uint64_t)ommGpuScratchMemoryBudget_Default,
 };
 
-enum class BakerBakeFlags : uint32_t 
+enum class BakerBakeFlags : uint32_t
 {
-    None = (uint32_t)omm::Gpu::BakeFlags::None,
-    EnablePostBuildInfo = (uint32_t)omm::Gpu::BakeFlags::EnablePostBuildInfo,
-    DisableSpecialIndices = (uint32_t)omm::Gpu::BakeFlags::DisableSpecialIndices,
-    DisableTexCoordDeduplication = (uint32_t)omm::Gpu::BakeFlags::DisableTexCoordDeduplication,
-    Force32BitIndices = (uint32_t)omm::Gpu::BakeFlags::Force32BitIndices,
-    ComputeOnly = (uint32_t)omm::Gpu::BakeFlags::ComputeOnly,
-    EnableNsightDebugMode = (uint32_t)omm::Gpu::BakeFlags::EnableNsightDebugMode,
+    Invalid = (uint32_t)ommGpuBakeFlags_Invalid,
+    PerformBake = (uint32_t)ommGpuBakeFlags_PerformBake,
+    PerformSetup = (uint32_t)ommGpuBakeFlags_PerformSetup,
+    EnablePostBuildInfo = (uint32_t)ommGpuBakeFlags_EnablePostBuildInfo,
+    DisableSpecialIndices = (uint32_t)ommGpuBakeFlags_DisableSpecialIndices,
+    DisableTexCoordDeduplication = (uint32_t)ommGpuBakeFlags_DisableTexCoordDeduplication,
+    Force32BitIndices = (uint32_t)ommGpuBakeFlags_Force32BitIndices,
+    ComputeOnly = (uint32_t)ommGpuBakeFlags_ComputeOnly,
+    EnableNsightDebugMode = (uint32_t)ommGpuBakeFlags_EnableNsightDebugMode,
 };
 
 struct BakerSettings
 {
-    uint32_t numSupportedOmmFormats;
-    uint32_t globalSubdivisionLevel;
     uint32_t maxSubdivisionLevel;
 
     float dynamicSubdivisionScale;
@@ -116,7 +113,6 @@ struct BakerSettings
     nri::AddressMode samplerAddressingMode;
 
     BakerOmmFormat globalOMMFormat;
-    BakerOmmFormat supportedOmmFormats[2];
     BakerScratchMemoryBudget maxScratchMemorySize;
     BakerBakeFlags bakeFlags;
 };
@@ -127,7 +123,7 @@ struct BakerInputs
     BufferResource inUvBuffer;
     BufferResource inIndexBuffer;
     BufferResource inSubdivisionLevelBuffer; //currently unused
-    BufferResource inTransientPool[omm::Gpu::PreBakeInfo::MAX_TRANSIENT_POOL_BUFFERS];
+    BufferResource inTransientPool[OMM_SDK_TRANSIENT_BUFFER_MAX_NUM];
 };
 
 struct BakerOutputs
@@ -177,47 +173,40 @@ private:
         nri::Texture* texture;
         nri::Memory* memory;
         nri::Descriptor* descriptor;
-    };
-
-    struct Pipeline
-    {
-        nri::Pipeline* pipeline;
-        nri::PipelineLayout* layout;
-        nri::DescriptorSet* samplers;
-        nri::FrameBuffer* frameBuffer;
+        nri::AccessBits state = nri::AccessBits::UNKNOWN;
     };
 
     struct GeometryQueueInstance
     {
         InputGeometryDesc* desc;
-        omm::Gpu::BakeDispatchConfigDesc dispatchConfigDesc;
+        ommGpuDispatchConfigDesc dispatchConfigDesc;
     };
 
 private:
     //On Init
     void CreateFrameBuffers(uint32_t pipelineNum);
-    void CreateSamplers(const omm::Gpu::BakePipelineInfoDesc* pipelinesInfo);
-    void CreatePipelines(const omm::Gpu::BakePipelineInfoDesc* pipelinesInfo);
-    void CreateComputePipeline(uint32_t id, const omm::Gpu::BakePipelineInfoDesc* pipelineInfo);
-    void CreateGraphicsPipeline(uint32_t id, const omm::Gpu::BakePipelineInfoDesc* pipelineInfo);
+    void CreateSamplers(const ommGpuPipelineInfoDesc* pipelinesInfo);
+    void CreatePipelines(const ommGpuPipelineInfoDesc* pipelinesInfo);
+    void CreateComputePipeline(uint32_t id, const ommGpuPipelineInfoDesc* pipelineInfo);
+    void CreateGraphicsPipeline(uint32_t id, const ommGpuPipelineInfoDesc* pipelineInfo);
     void CreateStaticResources(nri::CommandQueue* commandQueue);
 
     //On Submit
     void AddGeometryToQueue(InputGeometryDesc* geometryDesc, uint32_t geometryNum);
 
     //On Build
-    nri::DescriptorSet* PrepareDispatch(nri::CommandBuffer& commandBuffer, const omm::Gpu::Resource* resources, uint32_t resourceNum, uint32_t pipelineIndex, uint32_t geometryId);
-    void InsertUavBarriers(nri::CommandBuffer& commandBuffer, const omm::Gpu::Resource* resources, uint32_t resourceNum, uint32_t geometryId);
-    void PerformResourceTransition(const omm::Gpu::Resource& resource, uint32_t geometryId, std::vector<nri::BufferTransitionBarrierDesc>& bufferBarriers);
-    BufferResource& GetBuffer(const omm::Gpu::Resource& resource, uint32_t geometryId);
+    nri::DescriptorSet* PrepareDispatch(nri::CommandBuffer& commandBuffer, const ommGpuResource* resources, uint32_t resourceNum, uint32_t pipelineIndex, uint32_t geometryId);
+    void InsertUavBarriers(nri::CommandBuffer& commandBuffer, const ommGpuResource* resources, uint32_t resourceNum, uint32_t geometryId);
+    void PerformResourceTransition(const ommGpuResource& resource, uint32_t geometryId, std::vector<nri::BufferTransitionBarrierDesc>& bufferBarriers);
+    BufferResource& GetBuffer(const ommGpuResource& resource, uint32_t geometryId);
 
-    void UpdateDescriptorPool(uint32_t geometryId, const omm::Gpu::BakeDispatchChain* dispatchChain);
+    void UpdateDescriptorPool(uint32_t geometryId, const ommGpuDispatchChain* dispatchChain);
     void UpdateGlobalConstantBuffer();
 
-    nri::Descriptor* GetDescriptor(const omm::Gpu::Resource& resource, uint32_t geometryId);
-    void DispatchCompute(nri::CommandBuffer& commandBuffer, const omm::Gpu::ComputeDesc& desc, uint32_t geometryId);
-    void DispatchComputeIndirect(nri::CommandBuffer& commandBuffer, const omm::Gpu::ComputeIndirectDesc& desc, uint32_t geometryId);
-    void DispatchDrawIndexedIndirect(nri::CommandBuffer& commandBuffer, const omm::Gpu::DrawIndexedIndirectDesc& desc, uint32_t geometryId);
+    nri::Descriptor* GetDescriptor(const ommGpuResource& resource, uint32_t geometryId);
+    void DispatchCompute(nri::CommandBuffer& commandBuffer, const ommGpuComputeDesc& desc, uint32_t geometryId);
+    void DispatchComputeIndirect(nri::CommandBuffer& commandBuffer, const ommGpuComputeIndirectDesc& desc, uint32_t geometryId);
+    void DispatchDrawIndexedIndirect(nri::CommandBuffer& commandBuffer, const ommGpuDrawIndexedIndirectDesc& desc, uint32_t geometryId);
 
     void GenerateVisibilityMaskGPU(nri::CommandBuffer& commandBuffer, uint32_t geometryId);
 
@@ -237,7 +226,6 @@ private:
     //pipelines
     std::vector<nri::Pipeline*> m_NriPipelines;
     std::vector<nri::PipelineLayout*> m_NriPipelineLayouts;
-    std::vector<Pipeline> m_Pipelines;
 
     //vars
     NRIInterface NRI = {};
@@ -252,15 +240,15 @@ private:
     uint32_t m_ConstantBufferOffset;
 
     //framebuffers
-    std::vector<nri::FrameBuffer*> m_FrameBufferPerPipeline;
     FrameBuffer m_FrameBuffers[2];
+    std::vector<FrameBuffer*> m_FrameBufferPerPipeline;
     const uint32_t m_EmptyFrameBufferId = 0;
     const uint32_t m_DebugFrameBufferId = 1;
     const nri::Format m_DebugTexFormat = nri::Format::RGBA8_SNORM;
 
     //ommbaker
-    const omm::Gpu::BakePipelineInfoDesc* m_PipelineInfo;
-    omm::Gpu::Baker m_GpuBaker;
-    omm::Gpu::Pipeline m_Pipeline;
+    const ommGpuPipelineInfoDesc* m_PipelineInfo;
+    ommBaker m_GpuBaker;
+    ommGpuPipeline m_Pipeline;
 };
 

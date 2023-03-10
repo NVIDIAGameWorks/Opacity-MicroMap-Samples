@@ -255,7 +255,8 @@ void Profiler::BeginFrame()
 
 void Profiler::EndFrame(nri::CommandBuffer* lastCommandBufferToExecute)
 {
-    m_NRI.CmdCopyQueries(*lastCommandBufferToExecute, *m_QueryPools[m_BufferedFrameID], 0, m_QueriesNum, *m_QueryBuffers[m_BufferedFrameID], 0);
+    uint32_t numQueries = (m_CurrentTimestampID + 1) * 2;
+    m_NRI.CmdCopyQueries(*lastCommandBufferToExecute, *m_QueryPools[m_BufferedFrameID], 0, numQueries, *m_QueryBuffers[m_BufferedFrameID], 0);
     m_NRI.CmdResetQueries(*lastCommandBufferToExecute, *m_QueryPools[m_BufferedFrameID], 0, m_QueriesNum);
 }
 

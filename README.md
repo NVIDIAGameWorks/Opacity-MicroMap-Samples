@@ -26,8 +26,14 @@
 ## How to run
 
 - Run `3-Run OMM sample` script and answer the cmdline questions to set the runtime parameters
-- If [Smart Command Line Arguments extension for Visual Studio](https://marketplace.visualstudio.com/items?itemName=MBulli.SmartCommandlineArguments) is installed, all command line arguments will be loaded into corresponding window
 - The executables can be found in `_Build`. The executable loads resources from `_Data`, therefore please run the samples with working directory set to the project root folder (needed pieces of the command line can be found in `3-Run OMM sample` script)
+
+## Command Line Arguments
+- If [Smart Command Line Arguments extension for Visual Studio](https://marketplace.visualstudio.com/items?itemName=MBulli.SmartCommandlineArguments) is installed, all command line arguments will be loaded into corresponding window
+- `--api=D3D12`, `--api=VULKAN` for graphics API selection 
+- `--width=x`, `--height=y` for setting window size
+- `--scene=*path*` for scene selection
+- `--help` to print all the available commands
 
 ## Minimum Requirements
 

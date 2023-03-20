@@ -605,7 +605,7 @@ struct OmmGpuBakerPrebuildMemoryStats
     size_t total;
     size_t outputMaxSizes[(uint32_t)ommhelper::OmmDataLayout::GpuOutputNum];
     size_t outputTotalSizes[(uint32_t)ommhelper::OmmDataLayout::GpuOutputNum];
-    size_t maxTransientBufferSizes[OMM_SDK_TRANSIENT_BUFFER_MAX_NUM];
+    size_t maxTransientBufferSizes[OMM_MAX_TRANSIENT_POOL_BUFFERS];
 };
 
 struct OmmBatch
@@ -636,6 +636,7 @@ public:
         cmdLine.add("disableOmmBlasBuild", 0, "disable masked geometry building");
         cmdLine.add("enableOmmCache", 0, "enable omm init from cache");
         cmdLine.add<uint32_t>("ommBuildPostponeFrameId", 0, "build OMM on desired frameId", false, 0);
+        cmdLine.add("enableDPI", 0, "enable DPI scaling");
     }
 
     void ReadCmdLine(cmdline::parser& cmdLine) override
@@ -645,6 +646,7 @@ public:
         m_OmmBakeDesc.buildFrameId = cmdLine.get<uint32_t>("ommBuildPostponeFrameId");
         m_OmmBakeDesc.disableBlasBuild = cmdLine.exist("disableOmmBlasBuild");
         m_OmmBakeDesc.enableCache = cmdLine.exist("enableOmmCache");
+        m_IgnoreDPI = cmdLine.exist("enableDPI") == false;
     }
 
     bool Initialize(nri::GraphicsAPI graphicsAPI) override;
@@ -809,15 +811,12 @@ private:
     std::vector<nri::Memory*> m_OmmAlphaGeometryMemories;
     std::vector<nri::Buffer*> m_OmmAlphaGeometryBuffers;
 
-    //baker and builder queues
-    //std::vector<ommhelper::OmmBakeGeometryDesc> m_OmmBakeInstances;
-
     //temporal resources for baking
     std::vector<uint8_t> m_OmmRawAlphaChannelForCpuBaker;
 
     nri::Buffer* m_OmmGpuOutputBuffers[(uint32_t)ommhelper::OmmDataLayout::GpuOutputNum] = {};
     nri::Buffer* m_OmmGpuReadbackBuffers[(uint32_t)ommhelper::OmmDataLayout::GpuOutputNum] = {};
-    nri::Buffer* m_OmmGpuTransientBuffers[OMM_SDK_TRANSIENT_BUFFER_MAX_NUM] = {};
+    nri::Buffer* m_OmmGpuTransientBuffers[OMM_MAX_TRANSIENT_POOL_BUFFERS] = {};
 
     std::vector<nri::Buffer*> m_OmmCpuUploadBuffers;
     std::vector<nri::Memory*> m_OmmBakerAllocations;
@@ -1449,7 +1448,7 @@ void Sample::FillOmmBakerInputs()
             uint32_t minMip = utilsTexture->GetMipNum() - 1;
             uint32_t textureMipOffset = m_OmmBakeDesc.mipBias > minMip ? minMip : m_OmmBakeDesc.mipBias;
             ommDesc.texture.mipOffset = textureMipOffset;
-            ommDesc.texture.mipNum = 1; // gpu baker currently doesnt support multiple mips support
+            ommDesc.texture.mipNum = 1; // gpu baker currently doesn't support multiple mips
             ommhelper::MipDesc& mipDesc = ommDesc.texture.mips[0];
             mipDesc.nriTextureOrPtr.texture = texture;
             mipDesc.width = reinterpret_cast<detexTexture*>(utilsTexture->mips[bakerTexture.mipOffset])->width;;
@@ -1662,7 +1661,7 @@ OmmGpuBakerPrebuildMemoryStats Sample::GetGpuBakerPrebuildMemoryStats(bool print
             result.total += gpuBakerPreBuildInfo.dataSizes[y];
         }
 
-        for (size_t y = 0; y < OMM_SDK_TRANSIENT_BUFFER_MAX_NUM; ++y)
+        for (size_t y = 0; y < OMM_MAX_TRANSIENT_POOL_BUFFERS; ++y)
         {
             gpuBakerPreBuildInfo.transientBufferSizes[y] = helper::Align(gpuBakerPreBuildInfo.transientBufferSizes[y], sizeAlignment);
             result.maxTransientBufferSizes[y] = std::max(result.maxTransientBufferSizes[y], gpuBakerPreBuildInfo.transientBufferSizes[y]);
@@ -1745,10 +1744,9 @@ std::vector<OmmBatch> GetGpuBakerBatches(const std::vector<AlphaTestedGeometry>&
 
 void Sample::CreateAndBindGpuBakerReadbackBuffer(const OmmGpuBakerPrebuildMemoryStats& memoryStats)
 { // for caching gpu produced omm_sdk output
-
     size_t dataTypeBegin = (size_t)ommhelper::OmmDataLayout::ArrayData;
     size_t dataTypeEnd = (size_t)ommhelper::OmmDataLayout::DescArrayHistogram;
-    { // create and bind buffers to memory
+    {
         for (size_t i = dataTypeBegin; i < dataTypeEnd; ++i)
     {
             nri::BufferDesc bufferDesc = {};
@@ -1761,7 +1759,7 @@ void Sample::CreateAndBindGpuBakerReadbackBuffer(const OmmGpuBakerPrebuildMemory
         BindBuffersToMemory(NRI, m_Device, &m_OmmGpuReadbackBuffers[dataTypeBegin], dataTypeEnd - dataTypeBegin, m_OmmBakerAllocations, nri::MemoryLocation::HOST_READBACK);
     }
 
-    { // bind baker insatnces to the buffer
+    { // bind baker instances to the buffer
         size_t perDataTypeOffsets[(size_t)ommhelper::OmmDataLayout::GpuOutputNum] = {};
         for (size_t id = 0; id < m_OmmAlphaGeometry.size(); ++id)
         {
@@ -1829,7 +1827,7 @@ void Sample::CreateAndBindGpuBakerSatitcBuffer(const OmmGpuBakerPrebuildMemorySt
         gpuBuffers.push_back(m_OmmGpuOutputBuffers[i]);
     }
 
-    for (size_t i = 0; i < OMM_SDK_TRANSIENT_BUFFER_MAX_NUM; ++i)
+    for (size_t i = 0; i < OMM_MAX_TRANSIENT_POOL_BUFFERS; ++i)
     {
         bufferDesc.size = memoryStats.maxTransientBufferSizes[i];
         if (bufferDesc.size)
@@ -1883,7 +1881,7 @@ void Sample::CreateAndBindGpuBakerSatitcBuffer(const OmmGpuBakerPrebuildMemorySt
             offset += resource.dataSize;
         }
 
-        for (size_t j = 0; j < OMM_SDK_TRANSIENT_BUFFER_MAX_NUM; ++j)
+        for (size_t j = 0; j < OMM_MAX_TRANSIENT_POOL_BUFFERS; ++j)
         {
             desc.transientBuffers[j].buffer = m_OmmGpuTransientBuffers[j];
             desc.transientBuffers[j].bufferSize = memoryStats.maxTransientBufferSizes[j];
@@ -1975,7 +1973,7 @@ void Sample::RunOmmSetupPass(ommhelper::OmmBakeGeometryDesc** queue, size_t coun
     { // Get actual data sizes from postbuild info
         ommhelper::OmmBakeGeometryDesc& desc = *queue[i];
         CopyFromReadBackBuffer(NRI, desc, (uint32_t)ommhelper::OmmDataLayout::GpuPostBuildInfo);
-        ommGpuPostBakeInfo postbildInfo = *(ommGpuPostBakeInfo*)desc.outData[(uint32_t)ommhelper::OmmDataLayout::GpuPostBuildInfo].data();
+        ommGpuPostDispatchInfo postbildInfo = *(ommGpuPostDispatchInfo*)desc.outData[(uint32_t)ommhelper::OmmDataLayout::GpuPostBuildInfo].data();
         desc.gpuBakerPreBuildInfo.dataSizes[(uint32_t)ommhelper::OmmDataLayout::ArrayData] = postbildInfo.outOmmArraySizeInBytes;
     }
     memoryStats = GetGpuBakerPrebuildMemoryStats(true);
@@ -2012,7 +2010,7 @@ void Sample::BakeOmmGpu(std::vector<ommhelper::OmmBakeGeometryDesc*>& batch)
             { // Get actual data sizes from postbuild info
                 ommhelper::OmmBakeGeometryDesc& desc = *batch[i];
                 CopyFromReadBackBuffer(NRI, desc, (uint32_t)ommhelper::OmmDataLayout::GpuPostBuildInfo);
-                ommGpuPostBakeInfo postbildInfo = *(ommGpuPostBakeInfo*)desc.outData[(uint32_t)ommhelper::OmmDataLayout::GpuPostBuildInfo].data();
+                ommGpuPostDispatchInfo postbildInfo = *(ommGpuPostDispatchInfo*)desc.outData[(uint32_t)ommhelper::OmmDataLayout::GpuPostBuildInfo].data();
 
                 desc.gpuBuffers[(uint32_t)ommhelper::OmmDataLayout::ArrayData].dataSize = postbildInfo.outOmmArraySizeInBytes;
                 desc.readBackBuffers[(uint32_t)ommhelper::OmmDataLayout::ArrayData].dataSize = postbildInfo.outOmmArraySizeInBytes;
@@ -2193,7 +2191,7 @@ void Sample::ReleaseBakingResources()
     };
     DestroyBuffers(NRI, m_OmmGpuOutputBuffers, (uint32_t)ommhelper::OmmDataLayout::GpuOutputNum);
     DestroyBuffers(NRI, m_OmmGpuReadbackBuffers, (uint32_t)ommhelper::OmmDataLayout::GpuOutputNum);
-    DestroyBuffers(NRI, m_OmmGpuTransientBuffers, OMM_SDK_TRANSIENT_BUFFER_MAX_NUM);
+    DestroyBuffers(NRI, m_OmmGpuTransientBuffers, OMM_MAX_TRANSIENT_POOL_BUFFERS);
 
     for (auto& buffer : m_OmmCpuUploadBuffers)
         NRI.DestroyBuffer(*buffer);
@@ -2293,7 +2291,7 @@ void Sample::AppendOmmImguiSettings()
             else //if GPU
             {
                 ommhelper::GpuBakerFlags& gpuFlags = bakeDesc.gpuFlags;
-                maxSubdivisionLevel = gpuFlags.computeOnlyWorkload ? 10 : 9;//gpu baker is currently limited to level 9. 10 in compute only regime
+                maxSubdivisionLevel = gpuFlags.computeOnlyWorkload ? 12 : 9;//gpu baker in raster mode is limited to level 9
                 ImGui::Checkbox("SpecialIndices", &gpuFlags.enableSpecialIndices);
                 ImGui::SameLine();
                 ImGui::Checkbox("Compute Only", &gpuFlags.computeOnlyWorkload);

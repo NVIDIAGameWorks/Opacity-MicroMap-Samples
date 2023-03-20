@@ -173,7 +173,7 @@ namespace ommhelper
         InputTexture texture;
 
         GpuBakerBuffer gpuBuffers[uint32_t(OmmDataLayout::GpuOutputNum)];
-        GpuBakerBuffer transientBuffers[OMM_SDK_TRANSIENT_BUFFER_MAX_NUM];
+        GpuBakerBuffer transientBuffers[OMM_MAX_TRANSIENT_POOL_BUFFERS];
         GpuBakerBuffer readBackBuffers[uint32_t(OmmDataLayout::GpuOutputNum)];
 
         std::vector<uint8_t> outData[uint32_t(OmmDataLayout::MaxNum)]; //cpu baker outputs/gpu baker readback for caching
@@ -181,7 +181,7 @@ namespace ommhelper
         struct GpuBakerPrebuildInfo
         {
             uint64_t dataSizes[(uint32_t)OmmDataLayout::GpuOutputNum];
-            uint64_t transientBufferSizes[OMM_SDK_TRANSIENT_BUFFER_MAX_NUM];
+            uint64_t transientBufferSizes[OMM_MAX_TRANSIENT_POOL_BUFFERS];
         } gpuBakerPreBuildInfo;
 
         float alphaCutoff;

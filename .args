@@ -76,7 +76,7 @@
           "Command": "--debugNRI"
         },
         {
-          "Command": "--ignoreDPI"
+          "Command": "--enableDPI"
         },
         {
           "Command": "--frameNum=9999999"

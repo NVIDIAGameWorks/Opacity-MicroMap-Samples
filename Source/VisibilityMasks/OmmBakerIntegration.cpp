@@ -176,7 +176,7 @@ BufferResource& OmmBakerGpuIntegration::GetBuffer(const ommGpuResource& resource
     case ommGpuResourceType_OUT_OMM_INDEX_BUFFER: return outputs.outIndexBuffer;
     case ommGpuResourceType_OUT_OMM_DESC_ARRAY_HISTOGRAM: return outputs.outArrayHistogram;
     case ommGpuResourceType_OUT_OMM_INDEX_HISTOGRAM: return outputs.outIndexHistogram;
-    case ommGpuResourceType_OUT_POST_BAKE_INFO: return outputs.outPostBuildInfo;
+    case ommGpuResourceType_OUT_POST_DISPATCH_INFO: return outputs.outPostBuildInfo;
     case ommGpuResourceType_TRANSIENT_POOL_BUFFER: return inputs.inTransientPool[resource.indexInPool];
     case ommGpuResourceType_STATIC_VERTEX_BUFFER: return m_StaticBuffers[(uint32_t)GpuStaticResources::VertexBuffer];
     case ommGpuResourceType_STATIC_INDEX_BUFFER: return m_StaticBuffers[(uint32_t)GpuStaticResources::IndexBuffer];
@@ -199,7 +199,7 @@ nri::BufferViewType GetNriBufferViewType(ommGpuDescriptorType type)
 ommGpuBakeFlags GetBakeFlags(BakerBakeFlags flags)
 {
     static_assert((uint32_t)BakerBakeFlags::Invalid == (uint32_t)ommGpuBakeFlags_Invalid);
-    static_assert((uint32_t)BakerBakeFlags::EnablePostBuildInfo == (uint32_t)ommGpuBakeFlags_EnablePostBuildInfo);
+    static_assert((uint32_t)BakerBakeFlags::EnablePostBuildInfo == (uint32_t)ommGpuBakeFlags_EnablePostDispatchInfoStats);
     static_assert((uint32_t)BakerBakeFlags::DisableSpecialIndices == (uint32_t)ommGpuBakeFlags_DisableSpecialIndices);
     static_assert((uint32_t)BakerBakeFlags::DisableTexCoordDeduplication == (uint32_t)ommGpuBakeFlags_DisableTexCoordDeduplication);
     static_assert((uint32_t)BakerBakeFlags::EnableNsightDebugMode == (uint32_t)ommGpuBakeFlags_EnableNsightDebugMode);
@@ -234,7 +234,7 @@ void FillDescriptorRangeDescs(uint32_t count, const ommGpuDescriptorRangeDesc* o
 void OmmBakerGpuIntegration::CreateGraphicsPipeline(uint32_t pipelineId, const ommGpuPipelineInfoDesc* pipelineInfo)
 {
     const ommGpuGraphicsPipelineDesc& pipelineDesc = pipelineInfo->pipelines[pipelineId].graphics;
-    static_assert(ommGpuGraphicsPipelineDescVersion_VERSION == 2, "ommGpuGraphicsPipelineDesc has changed\n");
+    static_assert(OMM_GRAPHICS_PIPELINE_DESC_VERSION == 3, "ommGpuGraphicsPipelineDesc has changed\n");
 
     std::vector<nri::DescriptorRangeDesc> descriptorRangeDescs(pipelineDesc.descriptorRangeNum + 1);
     FillDescriptorRangeDescs(pipelineDesc.descriptorRangeNum, pipelineDesc.descriptorRanges, descriptorRangeDescs.data());
@@ -587,7 +587,7 @@ void OmmBakerGpuIntegration::GetPrebuildInfo(InputGeometryDesc* geometryDesc, ui
         prebuildInfo.indexBufferSize = info.outOmmIndexBufferSizeInBytes;
         prebuildInfo.ommDescArrayHistogramSize = info.outOmmArrayHistogramSizeInBytes;
         prebuildInfo.ommIndexHistogramSize = info.outOmmIndexHistogramSizeInBytes;
-        prebuildInfo.postBuildInfoSize = info.outOmmPostBuildInfoSizeInBytes;
+        prebuildInfo.postBuildInfoSize = info.outOmmPostDispatchInfoSizeInBytes;
         for (size_t j = 0; j < info.numTransientPoolBuffers; ++j)
             prebuildInfo.transientBufferSizes[j] = info.transientPoolBufferSizeInBytes[j];
 
@@ -1030,7 +1030,7 @@ void OmmBakerGpuIntegration::GenerateVisibilityMaskGPU(nri::CommandBuffer& comma
     PostBakeBufferTransition(outputBuffersTransition, outputs.outIndexHistogram);
     PostBakeBufferTransition(outputBuffersTransition, outputs.outPostBuildInfo);
 
-    for (size_t i = 0; i < OMM_SDK_TRANSIENT_BUFFER_MAX_NUM; ++i)
+    for (size_t i = 0; i < OMM_MAX_TRANSIENT_POOL_BUFFERS; ++i)
         PostBakeBufferTransition(outputBuffersTransition, inputs.inTransientPool[i]);
 
     nri::TransitionBarrierDesc transitionDesc = { outputBuffersTransition.data(), nullptr, (uint32_t)outputBuffersTransition.size(), 0 };

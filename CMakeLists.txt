@@ -100,7 +100,7 @@ add_subdirectory("External/NRD")
 find_library(INPUT_NVAPI_LIB NAMES nvapi64.lib PATHS "External/NVAPI/amd64")
 
 # Opacity Micro-Maps
-set(OMM_PROJECT_FOLDER "External/omm_bake")
+set(OMM_PROJECT_FOLDER "Opacity Micro-Map SDK")
 set(OMM_ENABLE_TESTS OFF CACHE BOOL "")
 set(OMM_ENABLE_GPU_TESTS OFF CACHE BOOL "")
 set(OMM_ENABLE_BENCHMARK OFF CACHE BOOL "")

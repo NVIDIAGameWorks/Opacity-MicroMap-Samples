@@ -18,8 +18,6 @@ license agreement from NVIDIA CORPORATION is strictly prohibited.
 #define OMM_SUPPORTS_CPP17 (1)
 #include "omm.h"
 
-#define OMM_SDK_TRANSIENT_BUFFER_MAX_NUM 8 // TODO: replace with a var from omm sdk
-
 struct TextureResource
 {
     nri::Texture* texture;
@@ -52,7 +50,7 @@ struct PrebuildInfo
     uint64_t ommDescArrayHistogramSize;
     uint64_t ommIndexHistogramSize;
     uint64_t postBuildInfoSize;
-    uint64_t transientBufferSizes[OMM_SDK_TRANSIENT_BUFFER_MAX_NUM];
+    uint64_t transientBufferSizes[OMM_MAX_TRANSIENT_POOL_BUFFERS];
 
     uint32_t indexCount;
     nri::Format indexFormat;
@@ -91,7 +89,7 @@ enum class BakerBakeFlags : uint32_t
     Invalid = (uint32_t)ommGpuBakeFlags_Invalid,
     PerformBake = (uint32_t)ommGpuBakeFlags_PerformBake,
     PerformSetup = (uint32_t)ommGpuBakeFlags_PerformSetup,
-    EnablePostBuildInfo = (uint32_t)ommGpuBakeFlags_EnablePostBuildInfo,
+    EnablePostBuildInfo = (uint32_t)ommGpuBakeFlags_EnablePostDispatchInfoStats,
     DisableSpecialIndices = (uint32_t)ommGpuBakeFlags_DisableSpecialIndices,
     DisableTexCoordDeduplication = (uint32_t)ommGpuBakeFlags_DisableTexCoordDeduplication,
     Force32BitIndices = (uint32_t)ommGpuBakeFlags_Force32BitIndices,
@@ -123,7 +121,7 @@ struct BakerInputs
     BufferResource inUvBuffer;
     BufferResource inIndexBuffer;
     BufferResource inSubdivisionLevelBuffer; //currently unused
-    BufferResource inTransientPool[OMM_SDK_TRANSIENT_BUFFER_MAX_NUM];
+    BufferResource inTransientPool[OMM_MAX_TRANSIENT_POOL_BUFFERS];
 };
 
 struct BakerOutputs

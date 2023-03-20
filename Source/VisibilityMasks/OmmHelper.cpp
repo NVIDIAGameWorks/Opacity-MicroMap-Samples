@@ -363,7 +363,7 @@ namespace ommhelper
         inputs.inTexture.mipOffset = texture.mipOffset;
         inputs.inTexture.alphaChannelId = texture.alphaChannelId;
 
-        for (size_t i = 0; i < OMM_SDK_TRANSIENT_BUFFER_MAX_NUM; ++i)
+        for (size_t i = 0; i < OMM_MAX_TRANSIENT_POOL_BUFFERS; ++i)
             FillGpuBakerResourceBufferDesc(inputs.inTransientPool[i], desc.transientBuffers[i]);
 
         BakerOutputs& outputs = geometryDesc.outputs;
@@ -408,7 +408,7 @@ namespace ommhelper
             prebuildInfo.dataSizes[(uint32_t)OmmDataLayout::IndexHistogram] = ommBakerPrebuildInfo.ommIndexHistogramSize;
             prebuildInfo.dataSizes[(uint32_t)OmmDataLayout::GpuPostBuildInfo] = ommBakerPrebuildInfo.postBuildInfoSize;
 
-            memcpy(prebuildInfo.transientBufferSizes, ommBakerPrebuildInfo.transientBufferSizes, sizeof(uint64_t) * OMM_SDK_TRANSIENT_BUFFER_MAX_NUM);
+            memcpy(prebuildInfo.transientBufferSizes, ommBakerPrebuildInfo.transientBufferSizes, sizeof(uint64_t) * OMM_MAX_TRANSIENT_POOL_BUFFERS);
 
             queue[i]->outOmmIndexFormat = ommBakerPrebuildInfo.indexFormat;
             queue[i]->outOmmIndexStride = (uint32_t)ommBakerPrebuildInfo.indexBufferSize / ommBakerPrebuildInfo.indexCount;

@@ -156,7 +156,7 @@ target_include_directories(${PROJECT_NAME} PRIVATE "External/NRIFramework/Includ
 target_include_directories(${PROJECT_NAME} PRIVATE "External/NRIFramework/External/NRI/Include")
 target_include_directories(${PROJECT_NAME} PRIVATE "External/NRIFramework/External")
 target_include_directories(${PROJECT_NAME} PRIVATE "External/NRD/Include" "External/NRD/Integration")
-target_include_directories(${PROJECT_NAME} PRIVATE "External/omm_bake/omm-sdk/include")
+target_include_directories(${PROJECT_NAME} PRIVATE "External/Opacity-MicroMap-SDK/omm-sdk/include")
 target_compile_definitions(${PROJECT_NAME} PRIVATE ${COMPILE_DEFINITIONS} PROJECT_NAME=${PROJECT_NAME} NRD_NORMAL_ENCODING=${NRD_NORMAL_ENCODING} NRD_ROUGHNESS_ENCODING=${NRD_ROUGHNESS_ENCODING})
 target_compile_options(${PROJECT_NAME} PRIVATE ${COMPILE_OPTIONS})
 

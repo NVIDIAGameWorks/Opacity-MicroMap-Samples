@@ -10,7 +10,7 @@
 	path = External/NGX
 	url = https://github.com/NVIDIA/DLSS.git
 	branch = main
-[submodule "External/omm_bake"]
-	path = External/omm_bake
+[submodule "External/Opacity-MicroMap-SDK"]
+	path = External/Opacity-MicroMap-SDK
 	url = https://github.com/NVIDIAGameWorks/Opacity-MicroMap-SDK.git
 	branch = main

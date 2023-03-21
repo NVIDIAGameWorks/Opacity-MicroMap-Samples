@@ -233,6 +233,7 @@ void Sample::GenerateGeometry(utils::Scene& scene)
 
 void Sample::PrepareFrame(uint32_t frameIndex)
 {
+    m_ForceHistoryReset = false;
     m_PrevSettings = m_Settings;
     m_Camera.SavePreviousState();
 
@@ -265,7 +266,7 @@ void Sample::PrepareFrame(uint32_t frameIndex)
         ImGui::SetNextWindowSize(ImVec2(0.0f, 0.0f));
         ImGui::Begin("Settings [Tab]", nullptr, ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoResize);
         {
-            float avgFrameTime = m_Timer.GetVerySmoothedElapsedTime();
+            float avgFrameTime = m_Timer.GetVerySmoothedFrameTime();
 
             char buf[256];
             snprintf(buf, sizeof(buf), "%.1f FPS (%.2f ms)", 1000.0f / avgFrameTime, avgFrameTime);
@@ -281,7 +282,7 @@ void Sample::PrepareFrame(uint32_t frameIndex)
 
             const uint32_t N = helper::GetCountOf(m_FrameTimes);
             uint32_t head = frameIndex % N;
-            m_FrameTimes[head] = m_Timer.GetElapsedTime();
+            m_FrameTimes[head] = m_Timer.GetFrameTime();
             ImGui::PushStyleColor(ImGuiCol_Text, colorFps);
             ImGui::PlotLines("", m_FrameTimes.data(), N, head, buf, lo, hi, ImVec2(0.0f, 70.0f));
             ImGui::PopStyleColor();
@@ -753,7 +754,7 @@ void Sample::PrepareFrame(uint32_t frameIndex)
                                 ImGui::Checkbox("Perf mode", &m_ReblurSettings.enablePerformanceMode);
 #if( NRD_MODE == SH || NRD_MODE == DIRECTIONAL_OCCLUSION )
                                 ImGui::SameLine();
-                                ImGui::Checkbox("SH", &m_SH);
+                                ImGui::Checkbox("Resolve", &m_Resolve);
 #endif
 
                                 ImGui::SliderFloat("Disocclusion (%)", &m_Settings.disocclusionThreshold, 0.25f, 5.0f, "%.3f", ImGuiSliderFlags_Logarithmic);
@@ -894,6 +895,10 @@ void Sample::PrepareFrame(uint32_t frameIndex)
                                 ImGui::Checkbox("Roughness edge stopping", &m_RelaxSettings.enableRoughnessEdgeStopping);
                                 ImGui::SameLine();
                                 ImGui::Checkbox("Anti-firefly", &m_RelaxSettings.enableAntiFirefly);
+                        #if( NRD_MODE == SH)
+                            ImGui::SameLine();
+                            ImGui::Checkbox("Resolve", &m_Resolve);
+                        #endif
 
                                 ImGui::SliderFloat("Disocclusion (%)", &m_Settings.disocclusionThreshold, 0.25f, 5.0f, "%.3f", ImGuiSliderFlags_Logarithmic);
                                 ImGui::SliderInt2("History length (frames)", &m_Settings.maxAccumulatedFrameNum, 0, MAX_HISTORY_FRAME_NUM, "%d", ImGuiSliderFlags_Logarithmic);
@@ -998,7 +1003,7 @@ void Sample::PrepareFrame(uint32_t frameIndex)
                             std::string sceneName = std::string(utils::GetFileName(m_SceneFile));
                             size_t dotPos = sceneName.find_last_of(".");
                             if (dotPos != std::string::npos)
-                                sceneName.replace(dotPos, 4, ".bin");
+                            sceneName = sceneName.substr(0, dotPos) + ".bin";
                             const std::string path = utils::GetFullPath(sceneName, utils::DataFolder::TESTS);
                             const uint32_t testByteSize = sizeof(m_Settings) + Camera::GetStateSize();
 
@@ -1197,7 +1202,7 @@ void Sample::PrepareFrame(uint32_t frameIndex)
 
     const float animationSpeed = m_Settings.pauseAnimation ? 0.0f : (m_Settings.animationSpeed < 0.0f ? 1.0f / (1.0f + Abs(m_Settings.animationSpeed)) : (1.0f + m_Settings.animationSpeed));
     const float scale = m_Settings.animatedObjectScale * m_Settings.meterToUnitsMultiplier / 2.0f;
-    const float animationDelta = animationSpeed * m_Timer.GetElapsedTime() * 0.001f;
+    const float animationDelta = animationSpeed * m_Timer.GetFrameTime() * 0.001f;
 
     if (m_Settings.motionStartTime > 0.0)
     {
@@ -1236,7 +1241,7 @@ void Sample::PrepareFrame(uint32_t frameIndex)
         m_PrevLocalPos = float3::Zero();
     }
 
-    m_Scene.Animate(animationSpeed, m_Timer.GetElapsedTime(), m_Settings.animationProgress, m_Settings.activeAnimation, m_Settings.animateCamera ? &desc.customMatrix : nullptr);
+    m_Scene.Animate(animationSpeed, m_Timer.GetFrameTime(), m_Settings.animationProgress, m_Settings.activeAnimation, m_Settings.animateCamera ? &desc.customMatrix : nullptr);
     m_Camera.Update(desc, frameIndex);
 
     // Animate sun
@@ -1338,7 +1343,7 @@ void Sample::PrepareFrame(uint32_t frameIndex)
 
         printf
         (
-            "\nOutput        : %ux%u\n"
+            "Output          : %ux%u\n"
             "Primary rays  : %ux%u\n"
             "Indirect rays : %ux%u x %u ray(s)\n"
             "Indirect rpp  : %.2f\n",
@@ -1480,15 +1485,13 @@ void Sample::CreateCommandBuffers()
 {
     for (Frame& frame : m_Frames)
     {
-        NRI_ABORT_ON_FAILURE(NRI.CreateDeviceSemaphore(*m_Device, true, frame.deviceSemaphore));
         NRI_ABORT_ON_FAILURE(NRI.CreateCommandAllocator(*m_CommandQueue, nri::WHOLE_DEVICE_GROUP, frame.commandAllocator));
         NRI_ABORT_ON_FAILURE(NRI.CreateCommandBuffer(*frame.commandAllocator, frame.commandBuffer));
     }
 
     NRI_ABORT_ON_FAILURE(NRI.CreateCommandAllocator(*m_CommandQueue, nri::WHOLE_DEVICE_GROUP, m_OmmContext.commandAllocator));
     NRI_ABORT_ON_FAILURE(NRI.CreateCommandBuffer(*m_OmmContext.commandAllocator, m_OmmContext.commandBuffer));
-    NRI_ABORT_ON_FAILURE(NRI.CreateDeviceSemaphore(*m_Device, false, m_OmmContext.deviceSemaphore));
-
+    NRI_ABORT_ON_FAILURE(NRI.CreateFence(*m_Device, 0, m_OmmContext.fence));
 }
 
 void Sample::CreatePipelineLayoutAndDescriptorPool()
@@ -1804,12 +1807,16 @@ inline nri::Format ConvertFormatToTextureStorageCompatible(nri::Format format)
 
 void Sample::CreateResources(nri::Format swapChainFormat)
 {
+    // TODO: DLSS doesn't support R16 UNORM/SNORM
 #if( NRD_MODE == OCCLUSION )
-    nri::Format dataFormat = nri::Format::R16_UNORM;
+    nri::Format dataFormat = m_DlssQuality != -1 ? nri::Format::R16_SFLOAT : nri::Format::R16_UNORM;
+    nri::Format dlssDataFormat = nri::Format::R16_SFLOAT;
 #elif( NRD_MODE == DIRECTIONAL_OCCLUSION )
-    nri::Format dataFormat = nri::Format::RGBA16_SNORM;
+    nri::Format dataFormat = m_DlssQuality != -1 ? nri::Format::RGBA16_SFLOAT : nri::Format::RGBA16_SNORM;
+    nri::Format dlssDataFormat = nri::Format::R16_SFLOAT;
 #else
     nri::Format dataFormat = nri::Format::RGBA16_SFLOAT;
+    nri::Format dlssDataFormat = nri::Format::R11_G11_B10_UFLOAT;
 #endif
 
 #if( NRD_NORMAL_ENCODING == 0 )
@@ -1881,7 +1888,7 @@ void Sample::CreateResources(nri::Format swapChainFormat)
         nri::TextureUsageBits::SHADER_RESOURCE | nri::TextureUsageBits::SHADER_RESOURCE_STORAGE, nri::AccessBits::SHADER_RESOURCE);
     CreateTexture(descriptorDescs, "Texture::Composed_ViewZ", nri::Format::RGBA16_SFLOAT, w, h, 1, 1,
         nri::TextureUsageBits::SHADER_RESOURCE | nri::TextureUsageBits::SHADER_RESOURCE_STORAGE, nri::AccessBits::SHADER_RESOURCE_STORAGE);
-    CreateTexture(descriptorDescs, "Texture::DlssOutput", nri::Format::R11_G11_B10_UFLOAT, (uint16_t)GetOutputResolution().x, (uint16_t)GetOutputResolution().y, 1, 1,
+    CreateTexture(descriptorDescs, "Texture::DlssOutput", dlssDataFormat, (uint16_t)GetOutputResolution().x, (uint16_t)GetOutputResolution().y, 1, 1,
         nri::TextureUsageBits::SHADER_RESOURCE | nri::TextureUsageBits::SHADER_RESOURCE_STORAGE, nri::AccessBits::SHADER_RESOURCE_STORAGE);
     CreateTexture(descriptorDescs, "Texture::Final", swapChainFormat, (uint16_t)GetWindowResolution().x, (uint16_t)GetWindowResolution().y, 1, 1,
         nri::TextureUsageBits::SHADER_RESOURCE | nri::TextureUsageBits::SHADER_RESOURCE_STORAGE, nri::AccessBits::COPY_SOURCE);
@@ -2573,10 +2580,10 @@ void Sample::BuildBottomLevelAccelerationStructure(nri::AccelerationStructure& a
     }
     NRI.EndCommandBuffer(*commandBuffer);
 
-    nri::WorkSubmissionDesc workSubmissionDesc = {};
-    workSubmissionDesc.commandBuffers = &commandBuffer;
-    workSubmissionDesc.commandBufferNum = 1;
-    NRI.SubmitQueueWork(*m_CommandQueue, workSubmissionDesc, nullptr);
+    nri::QueueSubmitDesc queueSubmitDesc = {};
+    queueSubmitDesc.commandBuffers = &commandBuffer;
+    queueSubmitDesc.commandBufferNum = 1;
+    NRI.QueueSubmit(*m_CommandQueue, queueSubmitDesc);
 
     NRI.WaitForIdle(*m_CommandQueue);
 
@@ -2666,7 +2673,6 @@ void Sample::BuildTopLevelAccelerationStructure(nri::CommandBuffer& commandBuffe
 
         instanceData->basePrimitiveIndex = basePrimitiveIndex;
         instanceData->baseTextureIndex = instance.materialIndex * TEXTURES_PER_MATERIAL;
-        instanceData->averageBaseColor = packedMaterial;
         instanceData->mWorldToWorldPrev0 = mWorldToWorldPrev.col0;
         instanceData->mWorldToWorldPrev1 = mWorldToWorldPrev.col1;
         instanceData->mWorldToWorldPrev2 = mWorldToWorldPrev.col2;
@@ -2716,7 +2722,7 @@ void Sample::UpdateConstantBuffer(uint32_t frameIndex, float globalResetFactor)
 {
     // Ambient accumulation
     const float maxSeconds = 0.5f;
-    float maxAccumFrameNum = maxSeconds * 1000.0f / m_Timer.GetSmoothedElapsedTime();
+    float maxAccumFrameNum = maxSeconds * 1000.0f / m_Timer.GetSmoothedFrameTime();
     m_AmbientAccumFrameNum = (m_AmbientAccumFrameNum + 1.0f) * globalResetFactor;
     m_AmbientAccumFrameNum = Min(m_AmbientAccumFrameNum, maxAccumFrameNum);
 
@@ -2815,7 +2821,7 @@ void Sample::UpdateConstantBuffer(uint32_t frameIndex, float globalResetFactor)
         data->gSampleNum = m_Settings.rpp;
         data->gBounceNum = m_Settings.bounceNum;
         data->gTAA = (m_Settings.denoiser != REFERENCE && m_Settings.TAA) ? 1 : 0;
-        data->gSH = m_SH;
+        data->gResolve                                      = m_Settings.denoiser == REFERENCE ? false : m_Resolve;
         data->gPSR = m_Settings.PSR && m_Settings.tracingMode != RESOLUTION_HALF;
         data->gValidation = m_DebugNRD && m_ShowValidationOverlay && m_Settings.denoiser != REFERENCE && m_Settings.separator != 1.0f;
         data->gHighlightAhs = (uint32_t)m_Settings.highLightAhs;
@@ -2894,14 +2900,15 @@ void Sample::RenderFrame(uint32_t frameIndex)
 
     const uint32_t bufferedFrameIndex = frameIndex % BUFFERED_FRAME_MAX_NUM;
     const Frame& frame = m_Frames[bufferedFrameIndex];
-    const uint32_t backBufferIndex = NRI.AcquireNextSwapChainTexture(*m_SwapChain, *m_BackBufferAcquireSemaphore);
-    const BackBuffer* backBuffer = &m_SwapChainBuffers[backBufferIndex];
     const bool isEven = !(frameIndex & 0x1);
     nri::TransitionBarrierDesc transitionBarriers = {};
     nri::CommandBuffer& commandBuffer = *frame.commandBuffer;
 
-    NRI.WaitForSemaphore(*m_CommandQueue, *frame.deviceSemaphore);
+    if (frameIndex >= BUFFERED_FRAME_MAX_NUM)
+    {
+        NRI.Wait(*m_FrameFence, 1 + frameIndex - BUFFERED_FRAME_MAX_NUM);
     NRI.ResetCommandAllocator(*frame.commandAllocator);
+    }
 
     // Global history reset
     float sunCurr = Smoothstep(-0.9f, 0.05f, Sin(DegToRad(m_Settings.sunElevation)));
@@ -2909,18 +2916,13 @@ void Sample::RenderFrame(uint32_t frameIndex)
     float resetHistoryFactor = 1.0f - Smoothstep(0.0f, 0.2f, Abs(sunCurr - sunPrev));
 
     if (m_PrevSettings.denoiser != m_Settings.denoiser)
-        resetHistoryFactor = 0.0f;
+        m_ForceHistoryReset = true;
     if (m_PrevSettings.denoiser == REFERENCE && m_PrevSettings.tracingMode != m_Settings.tracingMode)
-        resetHistoryFactor = 0.0f;
+        m_ForceHistoryReset = true;
     if (m_PrevSettings.ortho != m_Settings.ortho)
-        resetHistoryFactor = 0.0f;
+        m_ForceHistoryReset = true;
     if (m_PrevSettings.onScreen != m_Settings.onScreen)
-        resetHistoryFactor = 0.0f;
-    if (m_ForceHistoryReset || frameIndex == 0)
-    {
-        resetHistoryFactor = 0.0f;
-        m_ForceHistoryReset = false;
-    }
+        m_ForceHistoryReset = true;
 
     // Sizes
     uint32_t rectW = uint32_t(m_RenderResolution.x * m_Settings.resolutionScale + 0.5f);
@@ -2935,7 +2937,7 @@ void Sample::RenderFrame(uint32_t frameIndex)
     {
         bool isFastHistoryEnabled = m_Settings.maxAccumulatedFrameNum > m_Settings.maxFastAccumulatedFrameNum;
 
-        float fps = 1000.0f / m_Timer.GetSmoothedElapsedTime();
+        float fps = 1000.0f / m_Timer.GetSmoothedFrameTime();
         float maxAccumulatedFrameNum = Clamp(ACCUMULATION_TIME * fps, 5.0f, float(MAX_HISTORY_FRAME_NUM));
         float maxFastAccumulatedFrameNum = isFastHistoryEnabled ? (maxAccumulatedFrameNum / 5.0f) : float(MAX_HISTORY_FRAME_NUM);
 
@@ -2963,7 +2965,7 @@ void Sample::RenderFrame(uint32_t frameIndex)
     commonSettings.splitScreen = m_Settings.denoiser == REFERENCE ? 1.0f : m_Settings.separator;
     commonSettings.debug = m_Settings.debug;
     commonSettings.frameIndex = frameIndex;
-    commonSettings.accumulationMode = resetHistoryFactor == 0.0f ? nrd::AccumulationMode::CLEAR_AND_RESTART : nrd::AccumulationMode::CONTINUE;
+    commonSettings.accumulationMode = m_ForceHistoryReset ? nrd::AccumulationMode::CLEAR_AND_RESTART : nrd::AccumulationMode::CONTINUE;
     commonSettings.isMotionVectorInWorldSpace = m_Settings.mvType == MV_3D;
     commonSettings.isBaseColorMetalnessAvailable = true;
     commonSettings.enableValidation = m_DebugNRD && m_ShowValidationOverlay;
@@ -3034,7 +3036,7 @@ void Sample::RenderFrame(uint32_t frameIndex)
         NrdIntegration_SetResource(userPool, nrd::ResourceType::OUT_RADIANCE, { &GetState(Texture::Composed_ViewZ), GetFormat(Texture::Composed_ViewZ) });
     }
 
-    UpdateConstantBuffer(frameIndex, resetHistoryFactor);
+    UpdateConstantBuffer(frameIndex, m_ForceHistoryReset ? 0.0f : resetHistoryFactor);
 
     NRI.BeginCommandBuffer(commandBuffer, m_DescriptorPool, 0);
     {
@@ -3080,8 +3082,7 @@ void Sample::RenderFrame(uint32_t frameIndex)
         }
 
         { // Primary rays
-            //helper::Annotation annotation(NRI, commandBuffer, "Primary rays");
-            helper::Annotation annotation(NRI, commandBuffer, "Nachinaya zhizneopisanie geroya moego, Alekseya Fedorovicha Karamazova, nahozhus' v nekotorom nedoumenii. A imenno: hotya ya i nazyvayu Alekseya Fedorovicha moim geroem, no, odnako, sam znayu, chto chelovek on otnyud' ne velikij, a posemu i predvizhu neizbezhnye voprosy vrode takovyh: chem zhe zamechatelen vash Aleksej Fedorovich, chto vy vybrali ego svoim geroem?");
+            helper::Annotation annotation(NRI, commandBuffer, "Primary rays");
             static uint32_t eventID = m_Profiler.AllocateEvent("Primary + Shadows");
             uint32_t timesampID = m_Profiler.BeginTimestamp(context01, eventID);
 
@@ -3226,6 +3227,12 @@ void Sample::RenderFrame(uint32_t frameIndex)
                 settings.specularPrepassBlurRadius *= radiusResolutionScale;
                 settings.historyFixStrideBetweenSamples *= radiusResolutionScale;
 
+            #if( NRD_MODE == SH || NRD_MODE == DIRECTIONAL_OCCLUSION )
+                // High quality SG resolve allows to use more relaxed normal weights
+                if (m_Resolve)
+                    settings.lobeAngleFraction *= 1.333f;
+            #endif
+
 #if( NRD_MODE == OCCLUSION )
 #if( NRD_COMBINED == 1 )
                 m_Reblur.SetMethodSettings(nrd::Method::REBLUR_DIFFUSE_SPECULAR_OCCLUSION, &m_ReblurSettings);
@@ -3269,7 +3276,11 @@ void Sample::RenderFrame(uint32_t frameIndex)
                 settings.historyFixStrideBetweenSamples *= radiusResolutionScale;
 
 #if( NRD_COMBINED == 1 )
+                    #if( NRD_MODE == SH )
+                        m_Relax.SetMethodSettings(nrd::Method::RELAX_DIFFUSE_SPECULAR_SH, &m_RelaxSettings);
+                    #else
                 m_Relax.SetMethodSettings(nrd::Method::RELAX_DIFFUSE_SPECULAR, &m_RelaxSettings);
+                    #endif
 #else
                 nrd::RelaxDiffuseSettings diffuseSettings = {};
                 diffuseSettings.prepassBlurRadius = settings.diffusePrepassBlurRadius;
@@ -3317,9 +3328,14 @@ void Sample::RenderFrame(uint32_t frameIndex)
                 specularSettings.enableRoughnessEdgeStopping = settings.enableRoughnessEdgeStopping;
                 specularSettings.enableMaterialTest = settings.enableMaterialTestForSpecular;
 
+                    #if( NRD_MODE == SH )
+                        m_Relax.SetMethodSettings(nrd::Method::RELAX_DIFFUSE_SH, &diffuseSettings);
+                        m_Relax.SetMethodSettings(nrd::Method::RELAX_SPECULAR_SH, &specularSettings);
+                    #else
                 m_Relax.SetMethodSettings(nrd::Method::RELAX_DIFFUSE, &diffuseSettings);
                 m_Relax.SetMethodSettings(nrd::Method::RELAX_SPECULAR, &specularSettings);
 #endif
+                #endif
 
                 m_Relax.Denoise(frameIndex, commandBuffer, commonSettings, userPool, true);
             }
@@ -3426,7 +3442,7 @@ void Sample::RenderFrame(uint32_t frameIndex)
                 dlssDesc.motionVectorScale[1] = 1.0f;
                 dlssDesc.jitter[0] = -m_Camera.state.viewportJitter.x;
                 dlssDesc.jitter[1] = -m_Camera.state.viewportJitter.y;
-                dlssDesc.reset = resetHistoryFactor == 0.0f;
+                dlssDesc.reset = m_ForceHistoryReset;
 
                 m_DLSS.Evaluate(&commandBuffer, dlssDesc);
 
@@ -3517,6 +3533,9 @@ void Sample::RenderFrame(uint32_t frameIndex)
             }
         }
 
+        const uint32_t backBufferIndex = NRI.AcquireNextSwapChainTexture(*m_SwapChain);
+        const BackBuffer* backBuffer = &m_SwapChainBuffers[backBufferIndex];
+
         { // Copy to back-buffer
             const nri::TextureTransitionBarrierDesc copyTransitions[] =
             {
@@ -3549,23 +3568,19 @@ void Sample::RenderFrame(uint32_t frameIndex)
     m_Profiler.EndFrame(&commandBuffer);
     NRI.EndCommandBuffer(commandBuffer);
 
-    nri::WorkSubmissionDesc workSubmissionDesc = {};
-    workSubmissionDesc.wait = &m_BackBufferAcquireSemaphore;
-    workSubmissionDesc.waitNum = 1;
-    workSubmissionDesc.commandBuffers = &frame.commandBuffer;
-    workSubmissionDesc.commandBufferNum = 1;
-    workSubmissionDesc.signal = &m_BackBufferReleaseSemaphore;
-    workSubmissionDesc.signalNum = 1;
-    m_Profiler.ProcessContexts(workSubmissionDesc);
-    NRI.SubmitQueueWork(*m_CommandQueue, workSubmissionDesc, frame.deviceSemaphore);
+    nri::QueueSubmitDesc queueSubmitDesc = {};
+    queueSubmitDesc.commandBuffers = &frame.commandBuffer;
+    queueSubmitDesc.commandBufferNum = 1;
+    NRI.QueueSubmit(*m_CommandQueue, queueSubmitDesc);
 
-    NRI.SwapChainPresent(*m_SwapChain, *m_BackBufferReleaseSemaphore);
+    NRI.SwapChainPresent(*m_SwapChain);
 
+    NRI.QueueSignal(*m_CommandQueue, *m_FrameFence, 1 + frameIndex);
+
+    // Cap FPS if requested
     float msLimit = m_Settings.limitFps ? 1000.0f / m_Settings.maxFps : 0.0f;
-    do
-    {
-        m_Timer.UpdateElapsedTimeSinceLastSave();
-    } while (m_Timer.GetElapsedTime() < msLimit);
+    double lastFrameTimeStamp = m_Timer.GetLastFrameTimeStamp();
 
-    m_Timer.SaveCurrentTime();
+    while (m_Timer.GetTimeStamp() - lastFrameTimeStamp < msLimit)
+        ;
 }

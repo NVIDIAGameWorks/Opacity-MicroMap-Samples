@@ -74,7 +74,7 @@ public:
     uint32_t AllocateEvent(const char* eventName);
     uint32_t BeginTimestamp(ProfilerContext* ctx, uint32_t eventID);
     void EndTimestamp(ProfilerContext* ctx, uint32_t timestampID);
-    void ProcessContexts(const nri::WorkSubmissionDesc& desc);
+    void ProcessContexts(const nri::QueueSubmitDesc& desc);
 
     const ProfilerEvent* GetPerformanceEvents(size_t& count) const { count = m_Events.size(); return m_Events.data(); };
 
@@ -210,21 +210,17 @@ void Profiler::Init(nri::Device* device)
     }
     m_NRI.EndCommandBuffer(*commandBuffer);
 
-    nri::WorkSubmissionDesc workSubmissionDesc = {};
+    nri::QueueSubmitDesc workSubmissionDesc = {};
     workSubmissionDesc.commandBufferNum = 1;
     workSubmissionDesc.commandBuffers = &commandBuffer;
-    workSubmissionDesc.wait = nullptr;
-    workSubmissionDesc.waitNum = 0;
-    workSubmissionDesc.signal = nullptr;
-    workSubmissionDesc.signalNum = 0;
 
-    m_NRI.SubmitQueueWork(*commandQueue, workSubmissionDesc, nullptr);
+    m_NRI.QueueSubmit(*commandQueue, workSubmissionDesc);
     m_NRI.WaitForIdle(*commandQueue);
     m_NRI.DestroyCommandBuffer(*commandBuffer);
     m_NRI.DestroyCommandAllocator(*commandAllocator);
 }
 
-void Profiler::ProcessContexts(const nri::WorkSubmissionDesc& desc)
+void Profiler::ProcessContexts(const nri::QueueSubmitDesc& desc)
 {
     std::vector<ProfilerContext>& contexts = m_Contexts[m_BufferedFrameID];
     std::vector<ProfilerContext> sortedContexts = {};

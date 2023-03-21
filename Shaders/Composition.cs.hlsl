@@ -8,7 +8,7 @@ distribution of this software and related documentation without an express
 license agreement from NVIDIA CORPORATION is strictly prohibited.
 */
 
-#include "Shared.hlsli"
+#include "Include/Shared.hlsli"
 
 // Inputs
 NRI_RESOURCE( Texture2D<float>, gIn_ViewZ, t, 0, 1 );
@@ -101,38 +101,75 @@ void main( int2 pixelPos : SV_DispatchThreadId )
         diff = diff.xxxx;
         spec = spec.xxxx;
     #elif( NRD_MODE == SH )
-        float4 diffSh = gIn_DiffSh.SampleLevel( gLinearSampler, upsampleUv, 0 );
-        float4 specSh = gIn_SpecSh.SampleLevel( gLinearSampler, upsampleUv, 0 );
+        float4 diff1 = gIn_DiffSh.SampleLevel( gLinearSampler, upsampleUv, 0 );
+        NRD_SG diffSg = REBLUR_BackEnd_UnpackSh( diff, diff1 );
 
-        // Resolve diffuse
-        NRD_SH sh = REBLUR_BackEnd_UnpackSh( diff, diffSh );
-        diff.w = sh.normHitDist;
+        float4 spec1 = gIn_SpecSh.SampleLevel( gLinearSampler, upsampleUv, 0 );
+        NRD_SG specSg = REBLUR_BackEnd_UnpackSh( spec, spec1 );
 
-        if( gSH )
-            diff.xyz = NRD_SH_ResolveColor( sh, N );
+        // ( Optional ) AO / SO ( available only for REBLUR )
+        diff.w = diffSg.normHitDist;
+        spec.w = specSg.normHitDist;
+
+        if( gResolve )
+        {
+            // ( Optional ) replace "roughness" with "roughnessAA"
+            roughness = NRD_SG_ExtractRoughnessAA( specSg );
+
+            // Regain macro-details
+            diff.xyz = NRD_SG_ResolveDiffuse( diffSg, N ); // or NRD_SH_ResolveDiffuse( sg, N )
+            spec.xyz = NRD_SG_ResolveSpecular( specSg, N, V, roughness );
+
+            // Regain micro-details & jittering // TODO: preload N and Z into SMEM
+            float3 Ne = NRD_FrontEnd_UnpackNormalAndRoughness( gIn_Normal_Roughness[ pixelPos + int2( 1, 0 ) ] ).xyz;
+            float3 Nw = NRD_FrontEnd_UnpackNormalAndRoughness( gIn_Normal_Roughness[ pixelPos + int2( -1, 0 ) ] ).xyz;
+            float3 Nn = NRD_FrontEnd_UnpackNormalAndRoughness( gIn_Normal_Roughness[ pixelPos + int2( 0, 1 ) ] ).xyz;
+            float3 Ns = NRD_FrontEnd_UnpackNormalAndRoughness( gIn_Normal_Roughness[ pixelPos + int2( 0, -1 ) ] ).xyz;
+
+            float Ze = gIn_ViewZ[ pixelPos + int2( 1, 0 ) ];
+            float Zw = gIn_ViewZ[ pixelPos + int2( -1, 0 ) ];
+            float Zn = gIn_ViewZ[ pixelPos + int2( 0, 1 ) ];
+            float Zs = gIn_ViewZ[ pixelPos + int2( 0, -1 ) ];
+
+            float2 scale = NRD_SG_ReJitter( diffSg, specSg, Rf0, V, roughness, viewZ, Ze, Zw, Zn, Zs, N, Ne, Nw, Nn, Ns );
+
+            diff.xyz *= scale.x;
+            spec.xyz *= scale.y;
+        }
         else
-            diff.xyz = NRD_SH_ExtractColor( sh );
-
-        // Resolve specular
-        float3 D = STL::ImportanceSampling::GetSpecularDominantDirection( N, V, roughness, STL_SPECULAR_DOMINANT_DIRECTION_G1 ).xyz;
-
-        sh = REBLUR_BackEnd_UnpackSh( spec, specSh );
-        spec.w = sh.normHitDist;
-
-        if( gSH )
-            spec.xyz = NRD_SH_ResolveColor( sh, D );
-        else
-            spec.xyz = NRD_SH_ExtractColor( sh );
+        {
+            diff.xyz = NRD_SG_ExtractColor( diffSg );
+            spec.xyz = NRD_SG_ExtractColor( specSg );
+        }
     #elif( NRD_MODE == DIRECTIONAL_OCCLUSION )
-        NRD_SH sh = REBLUR_BackEnd_UnpackDirectionalOcclusion( diff );
-        diff.w = NRD_SH_ExtractColor( sh ).x;
+        NRD_SG sg = REBLUR_BackEnd_UnpackDirectionalOcclusion( diff );
 
-        if( gSH )
-            diff.w = NRD_SH_ResolveColor( sh, N ).x;
+        if( gResolve )
+        {
+            // Regain macro-details
+            diff = NRD_SG_ResolveDiffuse( sg, N ).x; // or NRD_SH_ResolveDiffuse( sg, N ).x
+
+            // Regain micro-details // TODO: preload N and Z into SMEM
+            float3 Ne = NRD_FrontEnd_UnpackNormalAndRoughness( gIn_Normal_Roughness[ pixelPos + int2( 1, 0 ) ] ).xyz;
+            float3 Nw = NRD_FrontEnd_UnpackNormalAndRoughness( gIn_Normal_Roughness[ pixelPos + int2( -1, 0 ) ] ).xyz;
+            float3 Nn = NRD_FrontEnd_UnpackNormalAndRoughness( gIn_Normal_Roughness[ pixelPos + int2( 0, 1 ) ] ).xyz;
+            float3 Ns = NRD_FrontEnd_UnpackNormalAndRoughness( gIn_Normal_Roughness[ pixelPos + int2( 0, -1 ) ] ).xyz;
+
+            float Ze = gIn_ViewZ[ pixelPos + int2( 1, 0 ) ];
+            float Zw = gIn_ViewZ[ pixelPos + int2( -1, 0 ) ];
+            float Zn = gIn_ViewZ[ pixelPos + int2( 0, 1 ) ];
+            float Zs = gIn_ViewZ[ pixelPos + int2( 0, -1 ) ];
+
+            float scale = NRD_SG_ReJitter( sg, sg, 0.0, V, 0.0, viewZ, Ze, Zw, Zn, Zs, N, Ne, Nw, Nn, Ns ).x;
+
+            diff *= scale;
+        }
+        else
+            diff = NRD_SG_ExtractColor( sg ).x;
 
         // or if needed...
-        //float3 bentNormal = NRD_SH_ExtractDirection( sh );
-        //float ao = NRD_SH_ExtractColor( sh ).x; // or just sh.normHitDist;
+        //float3 bentNormal = NRD_SG_ExtractDirection( sg );
+        //float ao = NRD_SG_ExtractColor( sg ).x; // or just sg.normHitDist;
     #else
         diff = REBLUR_BackEnd_UnpackRadianceAndNormHitDist( diff );
         spec = REBLUR_BackEnd_UnpackRadianceAndNormHitDist( spec );

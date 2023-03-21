@@ -3,6 +3,7 @@ cmake_minimum_required(VERSION 3.15)
 # Options
 option(DISABLE_SHADER_COMPILATION "Disable shader compilation" OFF)
 option(USE_DXC_FROM_PACKMAN_ON_AARCH64 "Use DXC from Packman for `aarch64`" ON)
+set (SHADER_OUTPUT_PATH "${CMAKE_CURRENT_SOURCE_DIR}/_Shaders")
 
 # Cached
 set(DXC_CUSTOM_PATH "custom/path/to/dxc" CACHE STRING "This DXC will be used if Vulkan SDK is not installed")
@@ -10,7 +11,18 @@ set(GLOBAL_BIN_OUTPUT_PATH "${CMAKE_SOURCE_DIR}/_Build" CACHE STRING "")
 set(CMAKE_CONFIGURATION_TYPES "Debug;Release" CACHE STRING "")
 
 # Create project
-project(OMMSample LANGUAGES CXX)
+project(OMMSample LANGUAGES C CXX)
+
+# Globals?
+set_property (GLOBAL PROPERTY USE_FOLDERS ON)
+
+set (CMAKE_CXX_STANDARD 17)
+set (CMAKE_CXX_STANDARD_REQUIRED ON)
+set (CMAKE_C_STANDARD 99)
+
+if (MSVC)
+    set (CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+endif ()
 
 # Download dependencies using Packman
 if(WIN32)
@@ -28,11 +40,12 @@ elseif((CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64") OR (CMAKE_SYSTEM_PROCESSOR MAT
 else()
     message(FATAL_ERROR "Unsupported architecture: '${CMAKE_SYSTEM_PROCESSOR}'")
 endif()
+
 message("Packman platform: ${PACKMAN_PLATFORM}")
 
 set(NRI_DATA_VERSION 2.2)
 
-execute_process(COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/External/Packman/Packman${PACKMAN_EXT}" pull "${CMAKE_CURRENT_SOURCE_DIR}/Dependencies.xml" -p ${PACKMAN_PLATFORM} -t nri_data_version=${NRI_DATA_VERSION}
+execute_process (COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/External/Packman/packman${PACKMAN_EXT}" pull "${CMAKE_CURRENT_SOURCE_DIR}/Dependencies.xml" -p ${PACKMAN_PLATFORM} -t nri_data_version=${NRI_DATA_VERSION}
     WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
     RESULT_VARIABLE PACKMAN_RESULT)
 
@@ -47,30 +60,11 @@ if((CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64") OR (CMAKE_SYSTEM_PROCESSOR MATCHES
     endif()
 endif()
 
-# Globals?
-set_property(GLOBAL PROPERTY USE_FOLDERS ON)
-
-set(CMAKE_CXX_STANDARD 17)
-set(CMAKE_CXX_STANDARD_REQUIRED ON)
-set(CMAKE_CXX_VISIBILITY_PRESET hidden)
-set(CMAKE_CXX_EXTENSIONS OFF)
-set(CMAKE_POSITION_INDEPENDENT_CODE ON)
-set(CMAKE_POSITION_INDEPENDENT_BINARIES ON)
-set(CMAKE_VISIBILITY_INLINES_HIDDEN ON)
-
-if(MSVC)
-    set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
-else()
-    set(CMAKE_STATIC_LINKER_FLAGS "${CMAKE_STATIC_LINKER_FLAGS} -static-libstdc++ -static-libgcc")
-    set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} -static-libstdc++ -static-libgcc")
-    set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -static-libstdc++ -static-libgcc")
-endif()
-
 # Compile options
 if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
-    set(COMPILE_OPTIONS -Wextra)
+    set (COMPILE_OPTIONS -msse4.1 -Wextra)
 elseif(CMAKE_CXX_COMPILER_ID MATCHES "GNU")
-    set(COMPILE_OPTIONS -Wextra)
+    set (COMPILE_OPTIONS -msse4.1 -Wextra)
 elseif(MSVC)
     set(COMPILE_OPTIONS /W4 /WX /wd4324)
 else()
@@ -83,11 +77,10 @@ if(WIN32)
 endif()
 
 # External/NRIFramework
+set (NRIF_SHADERS_PATH "${SHADER_OUTPUT_PATH}" CACHE STRING "")
 add_subdirectory("External/NRIFramework")
 
-# NRD
-set(SHADER_OUTPUT_PATH "${CMAKE_CURRENT_SOURCE_DIR}/_Shaders")
-
+# External/NRD
 set(NRD_DXC_CUSTOM_PATH ${DXC_CUSTOM_PATH} CACHE STRING "")
 set(NRD_SHADERS_PATH "${SHADER_OUTPUT_PATH}" CACHE STRING "")
 set(NRD_NORMAL_ENCODING "2" CACHE STRING "")
@@ -106,42 +99,7 @@ set(OMM_ENABLE_GPU_TESTS OFF CACHE BOOL "")
 set(OMM_ENABLE_BENCHMARK OFF CACHE BOOL "")
 set(OMM_STATIC_LIBRARY OFF CACHE BOOL "")
 set(OMM_OUTPUT_BIN_PATH "${GLOBAL_BIN_OUTPUT_PATH}")
-add_subdirectory("External/omm_bake")
-
-# Shader compilation
-if(NOT DISABLE_SHADER_COMPILATION)
-    # Create output directory
-    file(MAKE_DIRECTORY ${SHADER_OUTPUT_PATH})
-
-    # Include path for DXC and FXC (used in ShaderCompilation.cmake)
-    set(SHADER_INCLUDE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/Shaders")
-    set(MATHLIB_INCLUDE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/External/NRIFramework/External/MathLib")
-    set(EXTERNAL_INCLUDE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/External")
-
-    # List HLSL shaders and headers
-    file(GLOB_RECURSE HLSL_FILES "Shaders/*.hlsl" "Shaders/*.hlsli")
-    file(GLOB HLSL_MATHLIB_HEADER_FILES "${MATHLIB_INCLUDE_PATH}/*.hlsli")
-
-    include(ShaderCompilation.cmake)
-
-    # Define build rules for the shaders
-    list_hlsl_headers("${HLSL_FILES}" HEADER_FILES)
-    list_hlsl_headers("${HLSL_MATHLIB_HEADER_FILES}" HEADER_FILES)
-    list(APPEND HEADER_FILES "${CMAKE_CURRENT_SOURCE_DIR}/External/NRD/Shaders/Include/NRD.hlsli")
-    set_source_files_properties("${CMAKE_CURRENT_SOURCE_DIR}/External/NRD/Shaders/Include/NRD.hlsli" PROPERTIES VS_TOOL_OVERRIDE "None")
-
-    list_hlsl_shaders("${HLSL_FILES}" "${HEADER_FILES}" SHADER_FILES)
-
-    add_custom_target(${PROJECT_NAME}_Shaders ALL DEPENDS ${SHADER_FILES} SOURCES "${HEADER_FILES}")
-    set_property(TARGET ${PROJECT_NAME}_Shaders PROPERTY FOLDER "Sample")
-endif()
-
-# Function - copy a library to the output folder of the project
-function(copy_library PROJECT LIBRARY_NAME)
-    add_custom_command(TARGET ${PROJECT} POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different ${LIBRARY_NAME} $<TARGET_FILE_DIR:${PROJECT}>
-        COMMAND_EXPAND_LISTS)
-endfunction()
+add_subdirectory("External/Opacity-MicroMap-SDK")
 
 # Creates a project for sample and adds dependent operations
 file(GLOB OMM_SAMPLE_SOURCE "Source/*.cpp" "Source/*.hpp")
@@ -160,11 +118,8 @@ target_include_directories(${PROJECT_NAME} PRIVATE "External/Opacity-MicroMap-SD
 target_compile_definitions(${PROJECT_NAME} PRIVATE ${COMPILE_DEFINITIONS} PROJECT_NAME=${PROJECT_NAME} NRD_NORMAL_ENCODING=${NRD_NORMAL_ENCODING} NRD_ROUGHNESS_ENCODING=${NRD_ROUGHNESS_ENCODING})
 target_compile_options(${PROJECT_NAME} PRIVATE ${COMPILE_OPTIONS})
 
-if(NOT DISABLE_SHADER_COMPILATION)
-    add_dependencies(${PROJECT_NAME} ${PROJECT_NAME}_Shaders)
-endif()
-
 target_link_libraries(${PROJECT_NAME} PRIVATE NRIFramework NRI NRD omm-sdk)
+
 if(UNIX)
     target_link_libraries(${PROJECT_NAME} PRIVATE ${CMAKE_DL_LIBS} pthread X11)
 endif()
@@ -185,6 +140,13 @@ if(WIN32 AND MSVC)
     configure_file(.args "${CMAKE_BINARY_DIR}/${PROJECT_NAME}.args.json" COPYONLY)
 endif()
 
+# Function - copy a library to the output folder of the project
+function (copy_library PROJECT LIBRARY_NAME)
+    add_custom_command (TARGET ${PROJECT} POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different ${LIBRARY_NAME} $<TARGET_FILE_DIR:${PROJECT}>
+        COMMAND_EXPAND_LISTS)
+endfunction ()
+
 # DLSS
 if(WIN32)
     find_library(NGX_DEBUG_LIB NAMES nvsdk_ngx_s_dbg.lib PATHS "External/NGX/lib/Windows_x86_64/x86_64")
@@ -193,7 +155,7 @@ if(WIN32)
 else()
     find_library(NGX_DEBUG_LIB NAMES libnvsdk_ngx.a PATHS "External/NGX/lib/Linux_x86_64")
     find_library(NGX_RELEASE_LIB NAMES libnvsdk_ngx.a PATHS "External/NGX/lib/Linux_x86_64")
-    find_file(NGX_DLL NAMES libnvidia-ngx-dlss.so.2.4.0 PATHS "External/NGX/lib/Linux_x86_64/rel")
+    find_file (NGX_DLL NAMES libnvidia-ngx-dlss.so.3.1.1 PATHS "External/NGX/lib/Linux_x86_64/rel")
 endif()
 
 if(NGX_DEBUG_LIB AND NGX_RELEASE_LIB AND NGX_DLL)
@@ -210,6 +172,66 @@ else()
     message(FATAL_ERROR "Can't find NGX LIB/DLL")
 endif()
 
+# Shaders
+file (GLOB_RECURSE SHADERS "Shaders/*.hlsl" "Shaders/*.hlsli" "External/NRD/External/MathLib/*.hlsli")
+set_source_files_properties(${SHADERS} PROPERTIES VS_TOOL_OVERRIDE "None")
+
+if (WIN32)
+add_custom_target (${PROJECT_NAME}_Shaders ALL
+        COMMAND ShaderMake
+        --binary --flatten --stripReflection --compiler "${DXC_PATH}"
+        --sourceDir "Shaders"
+        -p DXIL --WX
+        -c Shaders.cfg
+        -o "${SHADER_OUTPUT_PATH}"
+        -I "Shaders"
+        -I "External"
+        -I "External/NGX"
+        -I "External/NRD/External"
+        -D COMPILER_DXC
+        -D NRD_NORMAL_ENCODING=${NRD_NORMAL_ENCODING}
+        -D NRD_ROUGHNESS_ENCODING=${NRD_ROUGHNESS_ENCODING}
+        COMMAND ShaderMake
+            --binary --flatten --stripReflection --compiler "${DXC_SPIRV_PATH}"
+            --sourceDir "Shaders"
+            -p SPIRV --WX
+            -c Shaders.cfg
+            -o "${SHADER_OUTPUT_PATH}"
+            -I "Shaders"
+            -I "External"
+            -I "External/NGX"
+            -I "External/NRD/External"
+            -D COMPILER_DXC
+            -D VULKAN
+            -D NRD_NORMAL_ENCODING=${NRD_NORMAL_ENCODING}
+            -D NRD_ROUGHNESS_ENCODING=${NRD_ROUGHNESS_ENCODING}
+        DEPENDS ShaderMake
+        WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+        VERBATIM
+        SOURCES ${SHADERS}
+    )
+else ()
+    add_custom_target (${PROJECT_NAME}_Shaders ALL
+        COMMAND ShaderMake
+        --binary --flatten --stripReflection --compiler "${DXC_SPIRV_PATH}"
+        --sourceDir "Shaders"
+        -p SPIRV --WX
+        -c Shaders.cfg
+        -o "${SHADER_OUTPUT_PATH}"
+        -I "Shaders"
+        -I "External"
+        -I "External/NGX"
+        -I "External/NRD/External"
+        -D COMPILER_DXC
+        -D VULKAN
+        -D NRD_NORMAL_ENCODING=${NRD_NORMAL_ENCODING}
+        -D NRD_ROUGHNESS_ENCODING=${NRD_ROUGHNESS_ENCODING}
+        DEPENDS ShaderMake
+    WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+    VERBATIM
+    SOURCES ${SHADERS}
+)
+endif ()
 
 # Opacity Micro-Map integration files
 if (TARGET omm-sdk)
@@ -221,3 +243,6 @@ if (TARGET omm-sdk)
     source_group("Profiler" FILES ${PROFILER_FILES})
     target_sources(${PROJECT_NAME}  PRIVATE ${PROFILER_FILES})
 endif()
+
+set_property (TARGET ${PROJECT_NAME}_Shaders PROPERTY FOLDER "Sample")
+add_dependencies (${PROJECT_NAME} ${PROJECT_NAME}_Shaders)

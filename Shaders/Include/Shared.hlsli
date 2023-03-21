@@ -8,8 +8,10 @@ distribution of this software and related documentation without an express
 license agreement from NVIDIA CORPORATION is strictly prohibited.
 */
 
+#include "MathLib/STL.hlsli"
+#include "NRD/Shaders/Include/NRD.hlsli"
+
 #include "BindingBridge.hlsli"
-#include "STL.hlsli"
 
 //===============================================================
 // GLOSSARY
@@ -100,7 +102,7 @@ NRI_RESOURCE( cbuffer, globalConstants, b, 0, 0 )
     uint gSampleNum;
     uint gBounceNum;
     uint gTAA;
-    uint gSH;
+    uint gResolve;
     uint gPSR;
     uint gValidation;
     uint gHighlightAhs;
@@ -139,13 +141,6 @@ NRI_RESOURCE( SamplerState, gLinearMipmapLinearSampler, s, 0, 0 );
 NRI_RESOURCE( SamplerState, gLinearMipmapNearestSampler, s, 1, 0 );
 NRI_RESOURCE( SamplerState, gLinearSampler, s, 2, 0 );
 NRI_RESOURCE( SamplerState, gNearestSampler, s, 3, 0 );
-
-//=============================================================================================
-// NRD
-//=============================================================================================
-
-#define NRD_HEADER_ONLY
-#include "NRD/Shaders/Include/NRD.hlsli"
 
 //=============================================================================================
 // SETTINGS

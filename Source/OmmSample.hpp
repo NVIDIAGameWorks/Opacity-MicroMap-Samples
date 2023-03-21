@@ -39,10 +39,10 @@ license agreement from NVIDIA CORPORATION is strictly prohibited.
 #define NRD_COMBINED                                1
 
 // IMPORTANT: adjust same macro in "Shared.hlsli"
-//      NORMAL                - common mode
-//      OCCLUSION             - REBLUR OCCLUSION-only denoisers
-//      SH                    - REBLUR SH (spherical harmonics) denoisers
-//      DIRECTIONAL_OCCLUSION - REBLUR_DIFFUSE_DIRECTIONAL_OCCLUSION denoiser
+//      NORMAL                - common (non specialized) denoisers
+//      OCCLUSION             - OCCLUSION (ambient or specular occlusion only) denoisers
+//      SH                    - SH (spherical harmonics or spherical gaussian) denoisers
+//      DIRECTIONAL_OCCLUSION - DIRECTIONAL_OCCLUSION (ambient occlusion in SH mode) denoisers
 #define NRD_MODE                                    NORMAL
 
 constexpr uint32_t MAX_ANIMATED_INSTANCE_NUM        = 512;
@@ -62,7 +62,7 @@ const std::vector<uint32_t> interior_checkMeTests =
     1, 3, 6, 8, 9, 10, 12, 13, 14, 23, 27, 28, 29, 31, 32, 35, 43, 44, 47, 53,
     59, 60, 62, 67, 75, 76, 79, 81, 95, 96, 107, 109, 111, 110, 114, 120, 124,
     126, 127, 132, 133, 134, 139, 140, 142, 145, 148, 150, 155, 156, 157, 160,
-    161, 162, 168, 169
+    161, 162, 164, 168, 169, 171, 172, 173, 174
 }};
 
 //=================================================================================
@@ -71,7 +71,7 @@ const std::vector<uint32_t> interior_checkMeTests =
 
 const std::vector<uint32_t> REBLUR_interior_improveMeTests =
 {{
-    153, 158
+    108, 153, 158
 }};
 
 const std::vector<uint32_t> RELAX_interior_improveMeTests =
@@ -326,7 +326,6 @@ struct NRIInterface
 
 struct Frame
 {
-    nri::DeviceSemaphore* deviceSemaphore;
     nri::CommandAllocator* commandAllocator;
     nri::CommandBuffer* commandBuffer;
     nri::Descriptor* globalConstantBufferDescriptor;
@@ -385,7 +384,7 @@ struct GlobalConstantBufferData
     uint32_t gSampleNum;
     uint32_t gBounceNum;
     uint32_t gTAA;
-    uint32_t gSH;
+    uint32_t gResolve;
     uint32_t gPSR;
     uint32_t gValidation;
     uint32_t gHighlightAhs;
@@ -562,8 +561,8 @@ struct InstanceData
 {
     uint32_t basePrimitiveIndex;
     uint32_t baseTextureIndex;
-    uint32_t averageBaseColor;
-    uint32_t unused;
+    uint32_t unused1;
+    uint32_t unused2;
 
     float4 mWorldToWorldPrev0;
     float4 mWorldToWorldPrev1;
@@ -727,13 +726,11 @@ private:
     NrdIntegration m_Reference;
     DlssIntegration m_DLSS;
     NRIInterface NRI = {};
-    Timer m_Timer;
     utils::Scene m_Scene;
     nri::Device* m_Device = nullptr;
     nri::SwapChain* m_SwapChain = nullptr;
     nri::CommandQueue* m_CommandQueue = nullptr;
-    nri::QueueSemaphore* m_BackBufferAcquireSemaphore = nullptr;
-    nri::QueueSemaphore* m_BackBufferReleaseSemaphore = nullptr;
+    nri::Fence* m_FrameFence;
     nri::AccelerationStructure* m_WorldTlas = nullptr;
     nri::AccelerationStructure* m_LightTlas = nullptr;
     nri::DescriptorPool* m_DescriptorPool = nullptr;
@@ -772,7 +769,7 @@ private:
     bool m_HasTransparentObjects = false;
     bool m_ShowUi = true;
     bool m_ForceHistoryReset = false;
-    bool m_SH = true;
+    bool m_Resolve = true;
     bool m_DebugNRD = false;
     bool m_ShowValidationOverlay = true;
 
@@ -792,7 +789,7 @@ private: //OMM:
     void CreateAndBindGpuBakerReadbackBuffer(const OmmGpuBakerPrebuildMemoryStats& memoryStats);
 
     inline uint64_t GetInstanceHash(uint32_t meshId, uint32_t materialId) { return uint64_t(meshId) << 32 | uint64_t(materialId); };
-    inline std::string GetOmmCacheFilename() {return m_OmmCacheFolderName + std::string("/") + m_SceneName; };
+    inline std::string GetOmmCacheFilename() { return m_OmmCacheFolderName + std::string("/") + m_SceneName; };
     void InitializeOmmGeometryFromCache(const OmmBatch& batch, std::vector<ommhelper::OmmBakeGeometryDesc*>& outBakeQueue);
     void SaveMaskCache(const OmmBatch& batch);
 
@@ -827,14 +824,15 @@ private:
     {
         nri::CommandAllocator* commandAllocator;
         nri::CommandBuffer* commandBuffer;
-        nri::DeviceSemaphore* deviceSemaphore;
+        nri::Fence* fence;
+        uint64_t fenceValue = 0;
     } m_OmmContext;
 
     struct OmmBlas
     {
         nri::AccelerationStructure* blas;
         //[!] VK Warning! VkMicromapExt wrapping is not supported yet. Use OmmHelper::DestroyMaskedGeometry instead of nri on release.
-        nri::Buffer* ommArray; 
+        nri::Buffer* ommArray;
     };
     std::map<uint64_t, OmmBlas> m_InstanceMaskToMaskedBlasData;
     std::vector<OmmBlas> m_MaskedBlasses;
@@ -877,7 +875,6 @@ Sample::~Sample()
     for (Frame& frame : m_Frames)
     {
         NRI.DestroyCommandBuffer(*frame.commandBuffer);
-        NRI.DestroyDeviceSemaphore(*frame.deviceSemaphore);
         NRI.DestroyCommandAllocator(*frame.commandAllocator);
         NRI.DestroyDescriptor(*frame.globalConstantBufferDescriptor);
     }
@@ -907,8 +904,7 @@ Sample::~Sample()
     NRI.DestroyDescriptorPool(*m_DescriptorPool);
     NRI.DestroyAccelerationStructure(*m_WorldTlas);
     NRI.DestroyAccelerationStructure(*m_LightTlas);
-    NRI.DestroyQueueSemaphore(*m_BackBufferAcquireSemaphore);
-    NRI.DestroyQueueSemaphore(*m_BackBufferReleaseSemaphore);
+    NRI.DestroyFence(*m_FrameFence);
     NRI.DestroySwapChain(*m_SwapChain);
 
     for (size_t i = 0; i < m_MemoryAllocations.size(); i++)
@@ -942,8 +938,7 @@ bool Sample::Initialize(nri::GraphicsAPI graphicsAPI)
     NRI_ABORT_ON_FAILURE( nri::GetInterface(*m_Device, NRI_INTERFACE(nri::HelperInterface), (nri::HelperInterface*)&NRI) );
 
     NRI_ABORT_ON_FAILURE( NRI.GetCommandQueue(*m_Device, nri::CommandQueueType::GRAPHICS, m_CommandQueue));
-    NRI_ABORT_ON_FAILURE( NRI.CreateQueueSemaphore(*m_Device, m_BackBufferAcquireSemaphore));
-    NRI_ABORT_ON_FAILURE( NRI.CreateQueueSemaphore(*m_Device, m_BackBufferReleaseSemaphore));
+    NRI_ABORT_ON_FAILURE( NRI.CreateFence(*m_Device, 0, m_FrameFence) );
 
     const nri::DeviceDesc& deviceDesc = NRI.GetDeviceDesc(*m_Device);
     m_ConstantBufferSize = helper::Align(sizeof(GlobalConstantBufferData), deviceDesc.constantBufferOffsetAlignment);
@@ -966,7 +961,7 @@ bool Sample::Initialize(nri::GraphicsAPI graphicsAPI)
             float sy = float(dlssSettings.minRenderResolution.Height) / float(dlssSettings.renderResolution.Height);
             float minResolutionScale = sy > sx ? sy : sx;
 
-            m_RenderResolution = {dlssSettings.renderResolution.Width, dlssSettings.renderResolution.Height};
+            m_RenderResolution = { dlssSettings.renderResolution.Width, dlssSettings.renderResolution.Height };
             m_MinResolutionScale = minResolutionScale;
 
             printf("Render resolution (%u, %u)\n", m_RenderResolution.x, m_RenderResolution.y);
@@ -982,53 +977,53 @@ bool Sample::Initialize(nri::GraphicsAPI graphicsAPI)
         }
     }
 
-    #if 0
-        // README "Memory requirements" table generator
-        printf("| %10s | %36s | %16s | %16s | %16s |\n", "Resolution", "Denoiser", "Working set (Mb)", "Persistent (Mb)", "Aliasable (Mb)");
-        printf("|------------|--------------------------------------|------------------|------------------|------------------|\n");
+#if 0
+    // README "Memory requirements" table generator
+    printf("| %10s | %36s | %16s | %16s | %16s |\n", "Resolution", "Denoiser", "Working set (Mb)", "Persistent (Mb)", "Aliasable (Mb)");
+    printf("|------------|--------------------------------------|------------------|------------------|------------------|\n");
 
-        for (uint32_t j = 0; j < 3; j++)
+    for (uint32_t j = 0; j < 3; j++)
+    {
+        const char* resolution = "1080p";
+        uint16_t w = 1920;
+        uint16_t h = 1080;
+
+        if (j == 1)
         {
-            const char* resolution = "1080p";
-            uint16_t w = 1920;
-            uint16_t h = 1080;
+            resolution = "1440p";
+            w = 2560;
+            h = 1440;
+        }
+        else if (j == 2)
+        {
+            resolution = "2160p";
+            w = 3840;
+            h = 2160;
+        }
 
-            if (j == 1)
-            {
-                resolution = "1440p";
-                w = 2560;
-                h = 1440;
-            }
-            else if (j == 2)
-            {
-                resolution = "2160p";
-                w = 3840;
-                h = 2160;
-            }
-
-            for (uint32_t i = 0; i <= (uint32_t)nrd::Method::REFERENCE; i++)
-            {
-                nrd::Method method = (nrd::Method)i;
-                const char* methodName = nrd::GetMethodString(method);
+        for (uint32_t i = 0; i <= (uint32_t)nrd::Method::REFERENCE; i++)
+        {
+            nrd::Method method = (nrd::Method)i;
+            const char* methodName = nrd::GetMethodString(method);
 
                 const nrd::MethodDesc methodDesc = {method, w, h};
 
-                nrd::DenoiserCreationDesc denoiserCreationDesc = {};
-                denoiserCreationDesc.requestedMethods = &methodDesc;
-                denoiserCreationDesc.requestedMethodsNum = 1;
+            nrd::DenoiserCreationDesc denoiserCreationDesc = {};
+            denoiserCreationDesc.requestedMethods = &methodDesc;
+            denoiserCreationDesc.requestedMethodsNum = 1;
 
-                NrdIntegration denoiser(2);
+            NrdIntegration denoiser(2);
                 NRI_ABORT_ON_FALSE( denoiser.Initialize(denoiserCreationDesc, *m_Device, NRI, NRI) );
-                printf("| %10s | %36s | %16.2f | %16.2f | %16.2f |\n", i == 0 ? resolution : "", methodName, denoiser.GetTotalMemoryUsageInMb(), denoiser.GetPersistentMemoryUsageInMb(), denoiser.GetAliasableMemoryUsageInMb());
-                denoiser.Destroy();
-            }
-
-            if (j != 2)
-                printf("| %10s | %36s | %16s | %16s | %16s |\n", "", "", "", "", "");
+            printf("| %10s | %36s | %16.2f | %16.2f | %16.2f |\n", i == 0 ? resolution : "", methodName, denoiser.GetTotalMemoryUsageInMb(), denoiser.GetPersistentMemoryUsageInMb(), denoiser.GetAliasableMemoryUsageInMb());
+            denoiser.Destroy();
         }
 
-        __debugbreak();
-    #endif
+        if (j != 2)
+            printf("| %10s | %36s | %16s | %16s | %16s |\n", "", "", "", "", "");
+    }
+
+    __debugbreak();
+#endif
 
     LoadScene();
     SetupAnimatedObjects();
@@ -1092,11 +1087,20 @@ bool Sample::Initialize(nri::GraphicsAPI graphicsAPI)
     { // RELAX
         const nrd::MethodDesc methodDescs[] =
         {
+            #if( NRD_MODE == SH )
+                #if( NRD_COMBINED == 1 )
+                    { nrd::Method::RELAX_DIFFUSE_SPECULAR_SH, (uint16_t)m_RenderResolution.x, (uint16_t)m_RenderResolution.y },
+                #else
+                    { nrd::Method::RELAX_DIFFUSE_SH, (uint16_t)m_RenderResolution.x, (uint16_t)m_RenderResolution.y },
+                    { nrd::Method::RELAX_SPECULAR_SH, (uint16_t)m_RenderResolution.x, (uint16_t)m_RenderResolution.y },
+                #endif
+            #else
             #if( NRD_COMBINED == 1 )
                 { nrd::Method::RELAX_DIFFUSE_SPECULAR, (uint16_t)m_RenderResolution.x, (uint16_t)m_RenderResolution.y },
             #else
                 { nrd::Method::RELAX_DIFFUSE, (uint16_t)m_RenderResolution.x, (uint16_t)m_RenderResolution.y },
                 { nrd::Method::RELAX_SPECULAR, (uint16_t)m_RenderResolution.x, (uint16_t)m_RenderResolution.y },
+            #endif
             #endif
         };
 
@@ -1151,7 +1155,7 @@ bool Sample::Initialize(nri::GraphicsAPI graphicsAPI)
     }
     m_Camera.Initialize(cameraInitialPos, lookAtPos, CAMERA_RELATIVE);
     m_Scene.UnloadGeometryData();
-     
+
     m_DefaultSettings = m_Settings;
 
     return CreateUserInterface(*m_Device, NRI, NRI, swapChainFormat);
@@ -1421,7 +1425,7 @@ void Sample::FillOmmBakerInputs()
 
                 PreprocessAlphaTexture(texture, workVector);
 
-            size_t rawBufferOffset = m_OmmRawAlphaChannelForCpuBaker.size();
+                size_t rawBufferOffset = m_OmmRawAlphaChannelForCpuBaker.size();
                 m_OmmRawAlphaChannelForCpuBaker.insert(m_OmmRawAlphaChannelForCpuBaker.end(), workVector.begin(), workVector.end());
                 materialMaskToTextureDataOffset.insert(std::make_pair(uint64_t(materialId) << 32 | uint64_t(mipId), rawBufferOffset));
                 workVector.clear();
@@ -1563,7 +1567,7 @@ void Sample::FillOmmBlasBuildQueue(const OmmBatch& batch, std::vector<ommhelper:
 
         PrepareOmmUsageCountsBuffers(m_OmmHelper, bakeResult);
 
-        if(AreBakerOutputsOnGPU(bakeResult))
+        if (AreBakerOutputsOnGPU(bakeResult))
         {
             for (uint32_t j = 0; j < (uint32_t)ommhelper::OmmDataLayout::BlasBuildGpuBuffersNum; ++j)
                 buildDesc.inputs.buffers[j] = bakeResult.gpuBuffers[j];
@@ -1748,7 +1752,7 @@ void Sample::CreateAndBindGpuBakerReadbackBuffer(const OmmGpuBakerPrebuildMemory
     size_t dataTypeEnd = (size_t)ommhelper::OmmDataLayout::DescArrayHistogram;
     {
         for (size_t i = dataTypeBegin; i < dataTypeEnd; ++i)
-    {
+        {
             nri::BufferDesc bufferDesc = {};
             bufferDesc.physicalDeviceMask = 0;
             bufferDesc.structureStride = sizeof(uint32_t);
@@ -1766,7 +1770,7 @@ void Sample::CreateAndBindGpuBakerReadbackBuffer(const OmmGpuBakerPrebuildMemory
             AlphaTestedGeometry& geometry = m_OmmAlphaGeometry[id];
             ommhelper::OmmBakeGeometryDesc& desc = geometry.bakeDesc;
             for (size_t i = dataTypeBegin; i < dataTypeEnd; ++i)
-        {
+            {
                 ommhelper::GpuBakerBuffer& resource = desc.readBackBuffers[i];
                 size_t& offset = perDataTypeOffsets[i];
 
@@ -1899,21 +1903,21 @@ void Sample::SaveMaskCache(const OmmBatch& batch)
 
     for (size_t id = batch.offset; id < batch.offset + batch.count; ++id)
     {
-    AlphaTestedGeometry& geometry = m_OmmAlphaGeometry[id];
+        AlphaTestedGeometry& geometry = m_OmmAlphaGeometry[id];
         ommhelper::OmmBakeGeometryDesc& bakeResults = geometry.bakeDesc;
-    uint64_t hash = GetInstanceHash(geometry.meshIndex, geometry.materialIndex);
+        uint64_t hash = GetInstanceHash(geometry.meshIndex, geometry.materialIndex);
 
         bool isDataValid = true;
-    ommhelper::OmmCaching::OmmData data;
-    for (uint32_t i = 0; i < (uint32_t)ommhelper::OmmDataLayout::CpuMaxNum; ++i)
-    {
-        data.data[i] = bakeResults.outData[i].data();
-        data.sizes[i] = bakeResults.outData[i].size();
+        ommhelper::OmmCaching::OmmData data;
+        for (uint32_t i = 0; i < (uint32_t)ommhelper::OmmDataLayout::CpuMaxNum; ++i)
+        {
+            data.data[i] = bakeResults.outData[i].data();
+            data.sizes[i] = bakeResults.outData[i].size();
             isDataValid &= data.sizes[i] > 0;
-    }
+        }
         if(isDataValid)
-    ommhelper::OmmCaching::SaveMasksToDisc(cacheFileName.c_str(), data, stateMask, hash, (uint16_t)bakeResults.outOmmIndexFormat);
-}
+            ommhelper::OmmCaching::SaveMasksToDisc(cacheFileName.c_str(), data, stateMask, hash, (uint16_t)bakeResults.outOmmIndexFormat);
+    }
 }
 
 void Sample::InitializeOmmGeometryFromCache(const OmmBatch& batch, std::vector<ommhelper::OmmBakeGeometryDesc*>& outBakeQueue)
@@ -1962,11 +1966,14 @@ void Sample::RunOmmSetupPass(ommhelper::OmmBakeGeometryDesc** queue, size_t coun
     }
     NRI.EndCommandBuffer(*commandBuffer);
 
-    nri::WorkSubmissionDesc workSubmissionDesc = {};
+    nri::QueueSubmitDesc workSubmissionDesc = {};
     workSubmissionDesc.commandBuffers = &commandBuffer;
     workSubmissionDesc.commandBufferNum = 1;
-    NRI.SubmitQueueWork(*m_CommandQueue, workSubmissionDesc, m_OmmContext.deviceSemaphore);
-    NRI.WaitForSemaphore(*m_CommandQueue, *m_OmmContext.deviceSemaphore);
+    NRI.QueueSubmit(*m_CommandQueue, workSubmissionDesc);
+    NRI.QueueSignal(*m_CommandQueue, *m_OmmContext.fence, ++m_OmmContext.fenceValue);
+    NRI.Wait(*m_OmmContext.fence, m_OmmContext.fenceValue);
+
+
     m_OmmHelper.GpuPostBakeCleanUp();
 
     for (size_t i = 0; i < count; ++i)
@@ -1992,11 +1999,12 @@ void Sample::BakeOmmGpu(std::vector<ommhelper::OmmBakeGeometryDesc*>& batch)
     }
     NRI.EndCommandBuffer(*commandBuffer);
 
-    nri::WorkSubmissionDesc workSubmissionDesc = {};
+    nri::QueueSubmitDesc workSubmissionDesc = {};
     workSubmissionDesc.commandBuffers = &commandBuffer;
     workSubmissionDesc.commandBufferNum = 1;
-    NRI.SubmitQueueWork(*m_CommandQueue, workSubmissionDesc, m_OmmContext.deviceSemaphore);
-    NRI.WaitForSemaphore(*m_CommandQueue, *m_OmmContext.deviceSemaphore);
+    NRI.QueueSubmit(*m_CommandQueue, workSubmissionDesc);
+    NRI.QueueSignal(*m_CommandQueue, *m_OmmContext.fence, ++m_OmmContext.fenceValue);
+    NRI.Wait(*m_OmmContext.fence, m_OmmContext.fenceValue);
 
     m_OmmHelper.GpuPostBakeCleanUp();
 
@@ -2025,8 +2033,9 @@ void Sample::BakeOmmGpu(std::vector<ommhelper::OmmBakeGeometryDesc*>& batch)
             }
         }
         NRI.EndCommandBuffer(*commandBuffer);
-        NRI.SubmitQueueWork(*m_CommandQueue, workSubmissionDesc, m_OmmContext.deviceSemaphore);
-        NRI.WaitForSemaphore(*m_CommandQueue, *m_OmmContext.deviceSemaphore);
+        NRI.QueueSubmit(*m_CommandQueue, workSubmissionDesc);
+        NRI.QueueSignal(*m_CommandQueue, *m_OmmContext.fence, ++m_OmmContext.fenceValue);
+        NRI.Wait(*m_OmmContext.fence, m_OmmContext.fenceValue);
     }
 
     for (size_t i = 0; i < batch.size(); ++i)
@@ -2122,11 +2131,12 @@ void Sample::RebuildOmmGeometry()
             }
             NRI.EndCommandBuffer(*m_OmmContext.commandBuffer);
 
-            nri::WorkSubmissionDesc workSubmissionDesc = {};
+            nri::QueueSubmitDesc workSubmissionDesc = {};
             workSubmissionDesc.commandBuffers = &m_OmmContext.commandBuffer;
             workSubmissionDesc.commandBufferNum = 1;
-            NRI.SubmitQueueWork(*m_CommandQueue, workSubmissionDesc, m_OmmContext.deviceSemaphore);
-            NRI.WaitForSemaphore(*m_CommandQueue, *m_OmmContext.deviceSemaphore);
+            NRI.QueueSubmit(*m_CommandQueue, workSubmissionDesc);
+            NRI.QueueSignal(*m_CommandQueue, *m_OmmContext.fence, ++m_OmmContext.fenceValue);
+            NRI.Wait(*m_OmmContext.fence, m_OmmContext.fenceValue);
 
             for (size_t id = batch.offset; id < batch.offset + batch.count; ++id)
             {

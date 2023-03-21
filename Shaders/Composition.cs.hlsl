@@ -80,36 +80,27 @@ void main( int2 pixelPos : SV_DispatchThreadId )
     float3 X = STL::Geometry::AffineTransform( gViewToWorld, Xv );
     float3 V = gOrthoMode == 0 ? normalize( gCameraOrigin - X ) : gViewDirection;
 
-    // Denoised indirect lighting
+    // Sample NRD outputs
     float2 upsampleUv = pixelUv * gRectSize / gRenderSize;
 
     float4 diff = gIn_Diff.SampleLevel( gLinearSampler, upsampleUv, 0 );
     float4 spec = gIn_Spec.SampleLevel( gLinearSampler, upsampleUv, 0 );
 
-    if( gDenoiserType == RELAX )
-    {
-        diff = RELAX_BackEnd_UnpackRadiance( diff );
-        spec = RELAX_BackEnd_UnpackRadiance( spec );
-
-        // RELAX doesn't support AO / SO denoising, set to estimated integrated average
-        diff.w = 1.0 / STL::Math::Pi( 1.0 );
-        spec.w = 1.0 / STL::Math::Pi( 1.0 );
-    }
-    else
-    {
-    #if( NRD_MODE == OCCLUSION )
-        diff = diff.xxxx;
-        spec = spec.xxxx;
-    #elif( NRD_MODE == SH )
+    #if( NRD_MODE == SH )
         float4 diff1 = gIn_DiffSh.SampleLevel( gLinearSampler, upsampleUv, 0 );
-        NRD_SG diffSg = REBLUR_BackEnd_UnpackSh( diff, diff1 );
-
         float4 spec1 = gIn_SpecSh.SampleLevel( gLinearSampler, upsampleUv, 0 );
+    #endif
+
+    // Decode SH mode outputs
+    #if( NRD_MODE == SH )
+        NRD_SG diffSg = REBLUR_BackEnd_UnpackSh( diff, diff1 );
         NRD_SG specSg = REBLUR_BackEnd_UnpackSh( spec, spec1 );
 
-        // ( Optional ) AO / SO ( available only for REBLUR )
-        diff.w = diffSg.normHitDist;
-        spec.w = specSg.normHitDist;
+        if( gDenoiserType == RELAX )
+        {
+            diffSg = RELAX_BackEnd_UnpackSh( diff, diff1 );
+            specSg = RELAX_BackEnd_UnpackSh( spec, spec1 );
+        }
 
         if( gResolve )
         {
@@ -141,13 +132,22 @@ void main( int2 pixelPos : SV_DispatchThreadId )
             diff.xyz = NRD_SG_ExtractColor( diffSg );
             spec.xyz = NRD_SG_ExtractColor( specSg );
         }
+
+        // ( Optional ) AO / SO
+        diff.w = diffSg.normHitDist;
+        spec.w = specSg.normHitDist;
+    // Decode OCCLUSION mode outputs
+    #elif( NRD_MODE == OCCLUSION )
+        diff.w = diff.x;
+        spec.w = spec.x;
+    // Decode DIRECTIONAL_OCCLUSION mode outputs
     #elif( NRD_MODE == DIRECTIONAL_OCCLUSION )
         NRD_SG sg = REBLUR_BackEnd_UnpackDirectionalOcclusion( diff );
 
         if( gResolve )
         {
             // Regain macro-details
-            diff = NRD_SG_ResolveDiffuse( sg, N ).x; // or NRD_SH_ResolveDiffuse( sg, N ).x
+            diff.w = NRD_SG_ResolveDiffuse( sg, N ).x; // or NRD_SH_ResolveDiffuse( sg, N ).x
 
             // Regain micro-details // TODO: preload N and Z into SMEM
             float3 Ne = NRD_FrontEnd_UnpackNormalAndRoughness( gIn_Normal_Roughness[ pixelPos + int2( 1, 0 ) ] ).xyz;
@@ -162,18 +162,29 @@ void main( int2 pixelPos : SV_DispatchThreadId )
 
             float scale = NRD_SG_ReJitter( sg, sg, 0.0, V, 0.0, viewZ, Ze, Zw, Zn, Zs, N, Ne, Nw, Nn, Ns ).x;
 
-            diff *= scale;
+            diff.w *= scale;
         }
         else
-            diff = NRD_SG_ExtractColor( sg ).x;
-
-        // or if needed...
-        //float3 bentNormal = NRD_SG_ExtractDirection( sg );
-        //float ao = NRD_SG_ExtractColor( sg ).x; // or just sg.normHitDist;
+            diff.w = NRD_SG_ExtractColor( sg ).x;
+    // Decode NORMAL mode outputs
     #else
+        if( gDenoiserType == RELAX )
+        {
+            diff = RELAX_BackEnd_UnpackRadiance( diff );
+            spec = RELAX_BackEnd_UnpackRadiance( spec );
+        }
+        else
+        {
         diff = REBLUR_BackEnd_UnpackRadianceAndNormHitDist( diff );
         spec = REBLUR_BackEnd_UnpackRadianceAndNormHitDist( spec );
+        }
     #endif
+
+    // ( Optional ) RELAX doesn't support AO / SO
+    if( gDenoiserType == RELAX )
+    {
+        diff.w = 1.0 / STL::Math::Pi( 1.0 );
+        spec.w = 1.0 / STL::Math::Pi( 1.0 );
     }
 
     diff.xyz *= gIndirectDiffuse;

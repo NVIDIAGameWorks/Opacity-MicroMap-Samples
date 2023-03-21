@@ -22,6 +22,9 @@ void main( uint2 pixelPos : SV_DispatchThreadId )
 
     // Upsampling
     float3 upsampled = BicubicFilterNoCorners( gIn_Image, gLinearSampler, pixelUv * gOutputSize, gInvOutputSize, 0.66 ).xyz;
+    #if( NRD_MODE == OCCLUSION || NRD_MODE == DIRECTIONAL_OCCLUSION )
+        upsampled = upsampled.xxx;
+    #endif
 
     // Tonemap
     if( gOnScreen == SHOW_FINAL )

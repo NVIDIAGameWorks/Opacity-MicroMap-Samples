@@ -36,8 +36,9 @@ Modifiers:
 #define USE_SIMPLEX_LIGHTING_MODEL          0
 #define USE_IMPORTANCE_SAMPLING             1
 #define USE_SANITIZATION                    0 // NRD sample is NAN/INF free
-#define USE_SIMULATED_MATERIAL_ID_TEST      0 // for "material ID" support debugging
 #define USE_PSR                             1
+#define USE_SIMULATED_MATERIAL_ID_TEST      0 // for "material ID" support debugging
+#define USE_SIMULATED_FIREFLY_TEST          0 // "anti-firefly" debugging
 
 #define BRDF_ENERGY_THRESHOLD               0.001
 #define AMBIENT_FADE                        ( -0.001 * gUnitToMetersMultiplier * gUnitToMetersMultiplier )
@@ -47,8 +48,6 @@ Modifiers:
 #define TAA_MOTION_MAX_REUSE                0.1
 #define MAX_MIP_LEVEL                       11.0
 #define IMPORTANCE_SAMPLE_NUM               16
-#define GLASS_THICKNESS                     0.003 // m
-#define GLASS_TINT                          float3( 0.95, 0.95, 0.99 )
 
 //=============================================================================================
 // CONSTANTS
@@ -81,7 +80,7 @@ Modifiers:
 #define SHOW_ROUGHNESS                      8
 #define SHOW_METALNESS                      9
 #define SHOW_WORLD_UNITS                    10
-#define SHOW_MESH                           11
+#define SHOW_INSTANCE_INDEX                 11
 #define SHOW_MIP_PRIMARY                    12
 #define SHOW_MIP_SPECULAR                   13
 
@@ -153,7 +152,7 @@ NRI_RESOURCE( cbuffer, globalConstants, b, 0, 0 )
     float gTanSunAngularRadius;
     float gTanPixelAngularRadius;
     float gDebug;
-    float gTransparent; // TODO: try to remove, casting a ray in an empty TLAS should be for free
+    float gTransparent;
     float gReference;
     float gUsePrevFrame;
     float gMinProbability;
@@ -221,7 +220,30 @@ float GetSpecMagicCurve( float roughness )
     return f;
 }
 
-// IMPORTANT: requires STL::Rng::Initialize
+// Returns 3D motion in world space or 2.5D motion in screen space
+float3 GetMotion( float3 X, float3 Xprev )
+{
+    float3 motion = Xprev - X;
+
+    if( !gIsWorldSpaceMotionEnabled )
+    {
+        float viewZ = STL::Geometry::AffineTransform( gWorldToView, X ).z;
+        float2 sampleUv = STL::Geometry::GetScreenUv( gWorldToClip, X );
+
+        float viewZprev = STL::Geometry::AffineTransform( gWorldToViewPrev, Xprev ).z;
+        float2 sampleUvPrev = STL::Geometry::GetScreenUv( gWorldToClipPrev, Xprev );
+
+        // IMPORTANT: scaling to "pixel" unit significantly improves utilization of FP16
+        motion.xy = ( sampleUvPrev - sampleUv ) * gRectSize;
+
+        // IMPORTANT: 2.5D motion is preferred over 3D motion due to imprecision issues due to FP16 rounding negative effects
+        motion.z = viewZprev - viewZ;
+    }
+
+    return motion;
+}
+
+// IMPORTANT: requires STL::Rng::Hash::Initialize
 float3 ApplyExposure( float3 Lsum, bool convertToLDR = true )
 {
     // Exposure
@@ -230,7 +252,7 @@ float3 ApplyExposure( float3 Lsum, bool convertToLDR = true )
         Lsum *= gExposure;
 
         // Dithering
-        float rnd = STL::Rng::GetFloat2( ).x;
+        float rnd = STL::Rng::Hash::GetFloat( );
         float luma = STL::Color::Luminance( Lsum );
         float amplitude = lerp( 0.4, 1.0 / 1024.0, STL::Math::Sqrt01( luma ) );
         float dither = 1.0 + ( rnd - 0.5 ) * amplitude;

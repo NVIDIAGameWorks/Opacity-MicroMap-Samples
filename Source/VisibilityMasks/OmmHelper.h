@@ -67,7 +67,7 @@ namespace ommhelper
         bool enableSpecialIndices = true;
         bool enableTexCoordDeduplication = true;
         bool force32bitIndices = false;
-        bool computeOnlyWorkload = false;
+        bool computeOnlyWorkload = true;
     };
 
     struct OmmBakeDesc
@@ -83,7 +83,6 @@ namespace ommhelper
         CpuBakerFlags cpuFlags;
         GpuBakerFlags gpuFlags;
         bool enableDebugMode = false;
-        bool disableBlasBuild = false; //in case of system crash on NvApi calls
         bool enableCache = false;
     };
 
@@ -256,7 +255,7 @@ namespace ommhelper
     class OpacityMicroMapsHelper
     {
     public:
-        void Initialize(nri::Device* device);
+        void Initialize(nri::Device* device, bool disableMaskedGeometryBuild);
 
         void GetGpuBakerPrebuildInfo(OmmBakeGeometryDesc** queue, const size_t count, const OmmBakeDesc& desc);
         void BakeOpacityMicroMapsGpu(nri::CommandBuffer* commandBuffer, OmmBakeGeometryDesc** queue, const size_t count, const OmmBakeDesc& bakeDesc, OmmGpuBakerPass pass);
@@ -328,5 +327,6 @@ namespace ommhelper
         OmmBakerGpuIntegration m_GpuBakerIntegration;
         ommBaker m_OmmCpuBaker = 0;
         nri::Device* m_Device;
+        bool m_DisableGeometryBuild = false;
     };
 }

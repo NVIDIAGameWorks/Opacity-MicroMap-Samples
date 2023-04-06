@@ -15,8 +15,10 @@ license agreement from NVIDIA CORPORATION is strictly prohibited.
     if(result != VK_SUCCESS)\
         { printf("[FAIL] {%s}", #result); std::abort(); };
 
-#define GET_VK_FUNC(getter, source, name)\
-    VK.name = (PFN_vk ## name)getter(source, "vk" #name);\
+#define GET_VK_FUNC(getter, source, name) (PFN_vk ## name)getter(source, "vk" #name)
+
+#define INIT_VK_FUNC(getter, source, name)\
+    VK.name = GET_VK_FUNC(getter, source, name);\
     if(VK.name == nullptr)\
         { printf("[FAIL] Unable to get VK device function: {%s}", "vk" #name ); std::abort(); };
 
@@ -73,33 +75,34 @@ namespace ommhelper
     void OpacityMicroMapsHelper::InitializeVK()
     {
         VkInstance vkInstance = (VkInstance)NRI.GetVkInstance(*m_Device);
+        VkDevice vkDevice = (VkDevice)NRI.GetDeviceNativeObject(*m_Device);
 
         { // Get required vk function pointers
-            PFN_vkGetInstanceProcAddr getInstanceProcAddr = (PFN_vkGetInstanceProcAddr)NRI.GetVkGetInstanceProcAddr(*m_Device);
             PFN_vkGetDeviceProcAddr getDeviceProcAddr = (PFN_vkGetDeviceProcAddr)NRI.GetVkGetDeviceProcAddr(*m_Device);
+            PFN_vkGetInstanceProcAddr getInstanceProcAddr = (PFN_vkGetInstanceProcAddr)NRI.GetVkGetInstanceProcAddr(*m_Device);
 
-            GET_VK_FUNC(getInstanceProcAddr, vkInstance, GetPhysicalDeviceMemoryProperties);
+            INIT_VK_FUNC(getInstanceProcAddr, vkInstance, GetPhysicalDeviceMemoryProperties);
 
-            GET_VK_FUNC(getDeviceProcAddr, GetVkDevice(), GetMicromapBuildSizesEXT);
-            GET_VK_FUNC(getDeviceProcAddr, GetVkDevice(), CreateMicromapEXT);
-            GET_VK_FUNC(getDeviceProcAddr, GetVkDevice(), CmdBuildMicromapsEXT);
-            GET_VK_FUNC(getDeviceProcAddr, GetVkDevice(), DestroyMicromapEXT);
+            INIT_VK_FUNC(getDeviceProcAddr, vkDevice, GetMicromapBuildSizesEXT);
+            INIT_VK_FUNC(getDeviceProcAddr, vkDevice, CreateMicromapEXT);
+            INIT_VK_FUNC(getDeviceProcAddr, vkDevice, CmdBuildMicromapsEXT);
+            INIT_VK_FUNC(getDeviceProcAddr, vkDevice, DestroyMicromapEXT);
 
-            GET_VK_FUNC(getDeviceProcAddr, GetVkDevice(), GetAccelerationStructureBuildSizesKHR);
-            GET_VK_FUNC(getDeviceProcAddr, GetVkDevice(), CreateAccelerationStructureKHR);
-            GET_VK_FUNC(getDeviceProcAddr, GetVkDevice(), GetAccelerationStructureDeviceAddressKHR);
-            GET_VK_FUNC(getDeviceProcAddr, GetVkDevice(), CmdBuildAccelerationStructuresKHR);
+            INIT_VK_FUNC(getDeviceProcAddr, vkDevice, GetAccelerationStructureBuildSizesKHR);
+            INIT_VK_FUNC(getDeviceProcAddr, vkDevice, CreateAccelerationStructureKHR);
+            INIT_VK_FUNC(getDeviceProcAddr, vkDevice, GetAccelerationStructureDeviceAddressKHR);
+            INIT_VK_FUNC(getDeviceProcAddr, vkDevice, CmdBuildAccelerationStructuresKHR);
 
-            GET_VK_FUNC(getDeviceProcAddr, GetVkDevice(), AllocateMemory);
-            GET_VK_FUNC(getDeviceProcAddr, GetVkDevice(), FreeMemory);
+            INIT_VK_FUNC(getDeviceProcAddr, vkDevice, AllocateMemory);
+            INIT_VK_FUNC(getDeviceProcAddr, vkDevice, FreeMemory);
 
-            GET_VK_FUNC(getDeviceProcAddr, GetVkDevice(), CreateBuffer);
-            GET_VK_FUNC(getDeviceProcAddr, GetVkDevice(), GetBufferMemoryRequirements);
-            GET_VK_FUNC(getDeviceProcAddr, GetVkDevice(), BindBufferMemory);
-            GET_VK_FUNC(getDeviceProcAddr, GetVkDevice(), GetBufferDeviceAddress);
-            GET_VK_FUNC(getDeviceProcAddr, GetVkDevice(), DestroyBuffer);
+            INIT_VK_FUNC(getDeviceProcAddr, vkDevice, CreateBuffer);
+            INIT_VK_FUNC(getDeviceProcAddr, vkDevice, GetBufferMemoryRequirements);
+            INIT_VK_FUNC(getDeviceProcAddr, vkDevice, BindBufferMemory);
+            INIT_VK_FUNC(getDeviceProcAddr, vkDevice, GetBufferDeviceAddress);
+            INIT_VK_FUNC(getDeviceProcAddr, vkDevice, DestroyBuffer);
 
-            GET_VK_FUNC(getDeviceProcAddr, GetVkDevice(), CmdPipelineBarrier);
+            INIT_VK_FUNC(getDeviceProcAddr, vkDevice, CmdPipelineBarrier);
         }
 
         {//create a buffer with properties required to store ommArrays, blases and scratch buffer to query memory type for future allocations

@@ -14,7 +14,7 @@ license agreement from NVIDIA CORPORATION is strictly prohibited.
 
 namespace ommhelper
 {
-    void OpacityMicroMapsHelper::Initialize(nri::Device* device)
+    void OpacityMicroMapsHelper::Initialize(nri::Device* device, bool disableMaskedGeometryBuild)
     {
         m_Device = device;
         if (m_Device)
@@ -23,7 +23,29 @@ namespace ommhelper
             nriResult |= (uint32_t)nri::GetInterface(*m_Device, NRI_INTERFACE(nri::HelperInterface), (nri::HelperInterface*)&NRI);
             nriResult |= (uint32_t)nri::GetInterface(*m_Device, NRI_INTERFACE(nri::RayTracingInterface), (nri::RayTracingInterface*)&NRI);
 
-            if (NRI.GetDeviceDesc(*m_Device).graphicsAPI == nri::GraphicsAPI::D3D12)
+            ommBakerCreationDesc desc = {};
+            desc.enableValidation = false;
+            desc.type = ommBakerType_CPU;
+            if (ommCreateBaker(&desc, &m_OmmCpuBaker) != ommResult_SUCCESS)
+            {
+                printf("[FAIL]: ommCreateOpacityMicromapBaker\n");
+                std::abort();
+            }
+
+            nri::GraphicsAPI gapi = NRI.GetDeviceDesc(*m_Device).graphicsAPI;
+            if(gapi != nri::GraphicsAPI::D3D12 && gapi != nri::GraphicsAPI::VULKAN)
+            {
+                printf("[FAIL]: Unsupported Graphics API\n");
+                std::abort();
+            }
+
+            m_GpuBakerIntegration.Initialize(*m_Device);
+
+            m_DisableGeometryBuild = disableMaskedGeometryBuild;
+            if (m_DisableGeometryBuild)
+                return; // diable geometry 
+
+            if (gapi == nri::GraphicsAPI::D3D12)
             {
                 nriResult |= (uint32_t)nri::GetInterface(*m_Device, NRI_INTERFACE(nri::WrapperD3D12Interface), (nri::WrapperD3D12Interface*)&NRI);
                 InitializeD3D12();
@@ -32,22 +54,6 @@ namespace ommhelper
             {
                 nriResult |= (uint32_t)nri::GetInterface(*m_Device, NRI_INTERFACE(nri::WrapperVKInterface), (nri::WrapperVKInterface*)&NRI);
                 InitializeVK();
-            }
-            else
-            {
-                printf("[FAIL]: Unsupported Graphics API\n");
-                std::abort();
-            }
-
-            m_GpuBakerIntegration.Initialize(*m_Device);
-
-            ommBakerCreationDesc desc = {};
-            desc.enableValidation = false;
-            desc.type = ommBakerType_CPU;
-            if (ommCreateBaker(&desc, &m_OmmCpuBaker) != ommResult_SUCCESS)
-            {
-                printf("[FAIL]: ommCreateOpacityMicromapBaker\n");
-                std::abort();
             }
         }
     }
@@ -435,6 +441,9 @@ namespace ommhelper
 #pragma region [ Geometry Builder ]
     void OpacityMicroMapsHelper::GetBlasPrebuildInfo(MaskedGeometryBuildDesc** queue, const size_t count)
     {
+        if (m_DisableGeometryBuild)
+            return;
+
         if (NRI.GetDeviceDesc(*m_Device).graphicsAPI == nri::GraphicsAPI::D3D12)
             GetPreBuildInfoD3D12(queue, count);
         else
@@ -443,6 +452,9 @@ namespace ommhelper
 
     void OpacityMicroMapsHelper::BuildMaskedGeometry(MaskedGeometryBuildDesc** queue, const size_t count, nri::CommandBuffer* commandBuffer)
     {
+        if (m_DisableGeometryBuild)
+            return;
+
         if (NRI.GetDeviceDesc(*m_Device).graphicsAPI == nri::GraphicsAPI::D3D12)
             BuildMaskedGeometryD3D12(queue, count, commandBuffer);
         else

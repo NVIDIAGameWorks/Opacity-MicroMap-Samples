@@ -47,17 +47,15 @@ compile_commands.json
 *.manifest
 
 # external packages
-External/Assimp/
 External/Detex/
 External/Glfw/
 External/ImGui/
 External/vulkansdk/
 External/DXC/
-External/NVAPI/
 
 # generated folders
+_Bin/
 _Build/
-_Compiler/
 _Data/
 _Shaders/
 _NRD_SDK/
@@ -67,4 +65,6 @@ _OmmCache/
 # can be a symbolic link
 _Data
 
+!External/omm_lib/Release/*
+!External/omm_lib/Debug/*
 !External/NVAPI/*

@@ -19,11 +19,11 @@ namespace ommhelper
         m_Device = device;
         if (m_Device)
         {
-            uint32_t nriResult = (uint32_t)nri::GetInterface(*m_Device, NRI_INTERFACE(nri::CoreInterface), (nri::CoreInterface*)&NRI);
-            nriResult |= (uint32_t)nri::GetInterface(*m_Device, NRI_INTERFACE(nri::HelperInterface), (nri::HelperInterface*)&NRI);
-            nriResult |= (uint32_t)nri::GetInterface(*m_Device, NRI_INTERFACE(nri::RayTracingInterface), (nri::RayTracingInterface*)&NRI);
+            uint32_t nriResult = (uint32_t)nri::nriGetInterface(*m_Device, NRI_INTERFACE(nri::CoreInterface), (nri::CoreInterface*)&NRI);
+            nriResult |= (uint32_t)nri::nriGetInterface(*m_Device, NRI_INTERFACE(nri::HelperInterface), (nri::HelperInterface*)&NRI);
+            nriResult |= (uint32_t)nri::nriGetInterface(*m_Device, NRI_INTERFACE(nri::RayTracingInterface), (nri::RayTracingInterface*)&NRI);
 
-            ommBakerCreationDesc desc = {};
+            ommBakerCreationDesc desc = ommBakerCreationDescDefault();
             desc.enableValidation = false;
             desc.type = ommBakerType_CPU;
             if (ommCreateBaker(&desc, &m_OmmCpuBaker) != ommResult_SUCCESS)
@@ -47,12 +47,12 @@ namespace ommhelper
 
             if (gapi == nri::GraphicsAPI::D3D12)
             {
-                nriResult |= (uint32_t)nri::GetInterface(*m_Device, NRI_INTERFACE(nri::WrapperD3D12Interface), (nri::WrapperD3D12Interface*)&NRI);
+                nriResult |= (uint32_t)nri::nriGetInterface(*m_Device, NRI_INTERFACE(nri::WrapperD3D12Interface), (nri::WrapperD3D12Interface*)&NRI);
                 InitializeD3D12();
             }
             else if (NRI.GetDeviceDesc(*m_Device).graphicsAPI == nri::GraphicsAPI::VULKAN)
             {
-                nriResult |= (uint32_t)nri::GetInterface(*m_Device, NRI_INTERFACE(nri::WrapperVKInterface), (nri::WrapperVKInterface*)&NRI);
+                nriResult |= (uint32_t)nri::nriGetInterface(*m_Device, NRI_INTERFACE(nri::WrapperVKInterface), (nri::WrapperVKInterface*)&NRI);
                 InitializeVK();
             }
         }
@@ -222,16 +222,18 @@ namespace ommhelper
             for (uint32_t mip = 0; mip < inTexture.mipNum; ++mip)
             {
                 ommCpuTextureMipDesc& texuteMipDesc = texuteMipDescs[mip];
+                texuteMipDesc = ommCpuTextureMipDescDefault();
                 MipDesc& inMipDesc = inTexture.mips[mip];
                 texuteMipDesc.width = inMipDesc.width;
                 texuteMipDesc.height = inMipDesc.height;
                 texuteMipDesc.textureData = inMipDesc.nriTextureOrPtr.ptr;
             }
 
-            ommCpuTextureDesc textureDesc;
+            ommCpuTextureDesc textureDesc = ommCpuTextureDescDefault();
             textureDesc.mipCount = inTexture.mipNum;
             textureDesc.mips = texuteMipDescs;
             textureDesc.format = GetOmmBakerTextureFormat(inTexture.format);
+            textureDesc.alphaCutoff = instance.alphaCutoff;
 
             ommCpuTexture vmTex = 0;
             if (ommCpuCreateTexture(m_OmmCpuBaker, &textureDesc, &vmTex) != ommResult_SUCCESS)
@@ -240,7 +242,7 @@ namespace ommhelper
                 std::abort();
             }
 
-            ommCpuBakeInputDesc bakeDesc = {};
+            ommCpuBakeInputDesc bakeDesc = ommCpuBakeInputDescDefault();
             bakeDesc.texture = vmTex;
             bakeDesc.alphaMode = ommAlphaMode(instance.alphaMode);
             bakeDesc.runtimeSamplerDesc.addressingMode = GetOmmAddressingMode(inTexture.addressingMode);

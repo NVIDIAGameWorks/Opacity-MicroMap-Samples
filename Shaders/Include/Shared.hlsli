@@ -8,46 +8,48 @@ distribution of this software and related documentation without an express
 license agreement from NVIDIA CORPORATION is strictly prohibited.
 */
 
-#include "MathLib/STL.hlsli"
-#include "NRD/Shaders/Include/NRD.hlsli"
-
-#include "BindingBridge.hlsli"
-
-//===============================================================
-// GLOSSARY
-//===============================================================
-/*
-Names:
-- V - view vector
-- N - normal
-- X - point position
-
-Modifiers:
-- v - view space
-- 0..N - hit index ( 0 - primary ray )
-*/
-
 //=============================================================================================
 // SETTINGS
 //=============================================================================================
 
+// Fused or separate denoising selection
+//      0 - DIFFUSE and SPECULAR
+//      1 - DIFFUSE_SPECULAR
+#define NRD_COMBINED                        1
+
+//      NORMAL                - common (non specialized) denoisers
+//      OCCLUSION             - OCCLUSION (ambient or specular occlusion only) denoisers
+//      SH                    - SH (spherical harmonics or spherical gaussian) denoisers
+//      DIRECTIONAL_OCCLUSION - DIRECTIONAL_OCCLUSION (ambient occlusion in SH mode) denoisers
 #define NRD_MODE                            NORMAL // NORMAL, OCCLUSION, SH, DIRECTIONAL_OCCLUSION
 
-#define USE_SIMPLEX_LIGHTING_MODEL          0
+// Default = 1
 #define USE_IMPORTANCE_SAMPLING             1
+#define USE_PSR                             1 // allow primary surface replacement
+
+// Default = 0
+#define USE_SIMPLEX_LIGHTING_MODEL          0
 #define USE_SANITIZATION                    0 // NRD sample is NAN/INF free
-#define USE_PSR                             1
 #define USE_SIMULATED_MATERIAL_ID_TEST      0 // for "material ID" support debugging
 #define USE_SIMULATED_FIREFLY_TEST          0 // "anti-firefly" debugging
+#define USE_RUSSIAN_ROULETTE                0 // bad practice for real-time denoising
+#define USE_DRS_STRESS_TEST                 0 // test for verifying that NRD doesn't touch data outside of DRS rectangle
+#define USE_INF_STRESS_TEST                 0 // test for verifying that NRD doesn't touch data outside of denoising range
+#define USE_ANOTHER_COBALT                  0 // another cobalt variant
+#define USE_PUDDLES                         0 // add puddles
+#define USE_RANDOMIZED_ROUGHNESS            0 // randomize roughness ( a common case in games )
+#define USE_LOAD                            0 // Load vs SampleLevel
 
-#define BRDF_ENERGY_THRESHOLD               0.001
-#define AMBIENT_FADE                        ( -0.001 * gUnitToMetersMultiplier * gUnitToMetersMultiplier )
+#define THROUGHPUT_THRESHOLD                0.001
+#define PSR_THROUGHPUT_THRESHOLD            0.0 // TODO: even small throughput can produce a bright spot if incoming radiance is huge
+#define MAX_MIP_LEVEL                       11.0
+#define IMPORTANCE_SAMPLES_NUM              16
 #define TAA_HISTORY_SHARPNESS               0.5 // [0; 1], 0.5 matches Catmull-Rom
 #define TAA_MAX_HISTORY_WEIGHT              0.95
 #define TAA_MIN_HISTORY_WEIGHT              0.1
 #define TAA_MOTION_MAX_REUSE                0.1
-#define MAX_MIP_LEVEL                       11.0
-#define IMPORTANCE_SAMPLE_NUM               16
+#define SPEC_LOBE_ENERGY                    0.95 // trimmed to 95%
+#define AMBIENT_FADE                        ( -0.001 * gUnitToMetersMultiplier * gUnitToMetersMultiplier )
 
 //=============================================================================================
 // CONSTANTS
@@ -60,8 +62,9 @@ Modifiers:
 #define DIRECTIONAL_OCCLUSION               3
 
 // Denoiser
-#define REBLUR                              0
-#define RELAX                               1
+#define DENOISER_REBLUR                     0
+#define DENOISER_RELAX                      1
+#define DENOISER_REFERENCE                  2
 
 // Resolution
 #define RESOLUTION_FULL                     0
@@ -79,40 +82,130 @@ Modifiers:
 #define SHOW_NORMAL                         7
 #define SHOW_ROUGHNESS                      8
 #define SHOW_METALNESS                      9
-#define SHOW_WORLD_UNITS                    10
-#define SHOW_INSTANCE_INDEX                 11
-#define SHOW_MIP_PRIMARY                    12
-#define SHOW_MIP_SPECULAR                   13
+#define SHOW_MATERIAL_ID                    10
+#define SHOW_PSR_THROUGHPUT                 11
+#define SHOW_WORLD_UNITS                    12
+#define SHOW_INSTANCE_INDEX                 13
+#define SHOW_UV                             14
+#define SHOW_CURVATURE                      15
+#define SHOW_MIP_PRIMARY                    16
+#define SHOW_MIP_SPECULAR                   17
 
 // Predefined material override
-#define MAT_GYPSUM                          1
-#define MAT_COBALT                          2
+#define MATERIAL_GYPSUM                     1
+#define MATERIAL_COBALT                     2
+
+// Material ID
+#define MATERIAL_ID_DEFAULT                 0
+#define MATERIAL_ID_METAL                   1
+#define MATERIAL_ID_PSR                     2
+#define MATERIAL_ID_HAIR                    3
+
+// Mip mode
+#define MIP_VISIBILITY                      0 // for visibility: emission, shadow and alpha mask
+#define MIP_LESS_SHARP                      1 // for normal
+#define MIP_SHARP                           2 // for albedo and roughness
 
 // Other
 #define FP16_MAX                            65504.0
 #define INF                                 1e5
 
+#define MORPH_MAX_ACTIVE_TARGETS_NUM        8u
+#define MORPH_ELEMENTS_PER_ROW_NUM          4
+#define MORPH_ROWS_NUM                      ( MORPH_MAX_ACTIVE_TARGETS_NUM / MORPH_ELEMENTS_PER_ROW_NUM )
+
+// Instance flags
+#define FLAG_FIRST_BIT                      26 // this + number of flags must be <= 32
+#define NON_FLAG_MASK                       ( ( 1 << FLAG_FIRST_BIT ) - 1 )
+
+#define FLAG_DEFAULT                        0x01 // always set
+#define FLAG_TRANSPARENT                    0x02 // transparent
+#define FLAG_FORCED_EMISSION                0x04 // animated emissive cube
+#define FLAG_STATIC                         0x08 // no velocity
+#define FLAG_DEFORMABLE                     0x10 // local animation
+#define FLAG_HAIR                           0x20 // hair
+
+#define GEOMETRY_ALL                        0xFF
+#define GEOMETRY_ONLY_TRANSPARENT           ( FLAG_TRANSPARENT )
+#define GEOMETRY_IGNORE_TRANSPARENT         ( ~FLAG_TRANSPARENT )
+
 //===============================================================
-// FP16
+// STRUCTS
 //===============================================================
 
-#ifdef NRD_COMPILER_DXC
-    #define half_float float16_t
-    #define half_float2 float16_t2
-    #define half_float3 float16_t3
-    #define half_float4 float16_t4
-#else
-    #define half_float float
-    #define half_float2 float2
-    #define half_float3 float3
-    #define half_float4 float4
+#if( defined( __cplusplus ) )
+    // IMPORTANT: sizeof( float3 ) == 16 in C++ code!
+    #define float16_t2 uint32_t
+    #define float16_t4 uint2
 #endif
+
+// IMPORTANT: must match utils::MorphTargetVertex
+struct MorphVertex
+{
+    float16_t4 position;
+    float16_t2 N;
+    float16_t2 T;
+};
+
+struct MorphedAttributes
+{
+    float16_t2 N;
+    float16_t2 T;
+};
+
+struct MorphedPrimitivePrevData
+{
+    float4 position0;
+    float4 position1;
+    float4 position2;
+};
+
+struct PrimitiveData
+{
+    float16_t2 uv0;
+    float16_t2 uv1;
+    float16_t2 uv2;
+    float16_t2 n0;
+
+    float16_t2 n1;
+    float16_t2 n2;
+    float16_t2 t0;
+    float16_t2 t1;
+
+    float16_t2 t2;
+    float16_t2 curvature0_curvature1;
+    float16_t2 curvature2_bitangentSign;
+    float worldToUvUnits;
+};
+
+struct InstanceData
+{
+    // For static: mObjectToWorld
+    // For rigid dynamic: mWorldToWorldPrev
+    // For deformable dynamic: mObjectToWorldPrev
+    float4 mOverloadedMatrix0;
+    float4 mOverloadedMatrix1;
+    float4 mOverloadedMatrix2;
+
+    float4 baseColorAndMetalnessScale;
+    float4 emissionAndRoughnessScale;
+
+    uint32_t textureOffsetAndFlags;
+    uint32_t primitiveOffset;
+    uint32_t morphedPrimitiveOffset;
+
+    // TODO: handling object scale embedded into the transformation matrix (assuming uniform scale)
+    // TODO: sign represents triangle winding
+    float invScale;
+};
 
 //===============================================================
 // RESOURCES
 //===============================================================
 
-NRI_RESOURCE( cbuffer, globalConstants, b, 0, 0 )
+#include "BindingBridge.hlsli"
+
+NRI_RESOURCE( cbuffer, GlobalConstants, b, 0, 0 )
 {
     float4x4 gViewToWorld;
     float4x4 gViewToClip;
@@ -122,14 +215,11 @@ NRI_RESOURCE( cbuffer, globalConstants, b, 0, 0 )
     float4x4 gWorldToClipPrev;
     float4 gHitDistParams;
     float4 gCameraFrustum;
-    float3 gSunDirection;
-    float gExposure;
-    float3 gCameraOrigin;
-    float gMipBias;
-    float3 gTrimmingParams;
-    float gEmissionIntensity;
-    float3 gViewDirection;
-    float gOrthoMode;
+    float4 gSunDirection_gExposure;
+    float4 gCameraOrigin_gMipBias;
+    float4 gViewDirection_gOrthoMode;
+    float4 gHairBaseColorOverride; // w is alpha or blend factor
+    float2 gHairBetasOverride;
     float2 gWindowSize;
     float2 gInvWindowSize;
     float2 gOutputSize;
@@ -140,9 +230,8 @@ NRI_RESOURCE( cbuffer, globalConstants, b, 0, 0 )
     float2 gInvRectSize;
     float2 gRectSizePrev;
     float2 gJitter;
+    float gEmissionIntensity;
     float gNearZ;
-    float gAmbientAccumSpeed;
-    float gAmbient;
     float gSeparator;
     float gRoughnessOverride;
     float gMetalnessOverride;
@@ -153,25 +242,33 @@ NRI_RESOURCE( cbuffer, globalConstants, b, 0, 0 )
     float gTanPixelAngularRadius;
     float gDebug;
     float gTransparent;
-    float gReference;
-    float gUsePrevFrame;
+    float gPrevFrameConfidence;
     float gMinProbability;
-    uint gDenoiserType;
-    uint gDisableShadowsAndEnableImportanceSampling; // TODO: remove - modify GetSunIntensity to return 0 if sun is below horizon
-    uint gOnScreen;
-    uint gFrameIndex;
-    uint gForcedMaterial;
-    uint gUseNormalMap;
-    uint gIsWorldSpaceMotionEnabled;
-    uint gTracingMode;
-    uint gSampleNum;
-    uint gBounceNum;
-    uint gTAA;
-    uint gResolve;
-    uint gPSR;
-    uint gValidation;
-    uint gHighlightAhs;
-    uint gAhsDynamicMip;
+    float gUnproject;
+    float gAperture;
+    float gFocalDistance;
+    float gFocalLength;
+    uint32_t gDenoiserType;
+    uint32_t gDisableShadowsAndEnableImportanceSampling; // TODO: remove - modify GetSunIntensity to return 0 if sun is below horizon
+    uint32_t gOnScreen;
+    uint32_t gFrameIndex;
+    uint32_t gForcedMaterial;
+    uint32_t gUseNormalMap;
+    uint32_t gIsWorldSpaceMotionEnabled;
+    uint32_t gTracingMode;
+    uint32_t gSampleNum;
+    uint32_t gBounceNum;
+    uint32_t gTAA;
+    uint32_t gResolve;
+    uint32_t gPSR;
+    uint32_t gValidation;
+    uint32_t gTrimLobe;
+    uint32_t gHighlightAhs;
+    uint32_t gAhsDynamicMip;
+
+    // Ambient
+    float gAmbientMaxAccumulatedFramesNum;
+    float gAmbient;
 
     // NIS
     float gNisDetectRatio;
@@ -192,20 +289,49 @@ NRI_RESOURCE( cbuffer, globalConstants, b, 0, 0 )
     float gNisDstNormY;
     float gNisSrcNormX;
     float gNisSrcNormY;
-    uint gNisInputViewportOriginX;
-    uint gNisInputViewportOriginY;
-    uint gNisInputViewportWidth;
-    uint gNisInputViewportHeight;
-    uint gNisOutputViewportOriginX;
-    uint gNisOutputViewportOriginY;
-    uint gNisOutputViewportWidth;
-    uint gNisOutputViewportHeight;
+    uint32_t gNisInputViewportOriginX;
+    uint32_t gNisInputViewportOriginY;
+    uint32_t gNisInputViewportWidth;
+    uint32_t gNisInputViewportHeight;
+    uint32_t gNisOutputViewportOriginX;
+    uint32_t gNisOutputViewportOriginY;
+    uint32_t gNisOutputViewportWidth;
+    uint32_t gNisOutputViewportHeight;
 };
+
+NRI_RESOURCE( cbuffer, MorphMeshUpdateVerticesConstants, b, 0, 3 )
+{
+    uint4 gIndices[ MORPH_ROWS_NUM ];
+    float4 gWeights[ MORPH_ROWS_NUM ];
+
+    uint32_t gNumWeights;
+    uint32_t gNumVertices;
+    uint32_t gPositionCurrFrameOffset;
+    uint32_t gAttributesOutputOffset;
+};
+
+NRI_RESOURCE( cbuffer, MorphMeshUpdatePrimitivesConstants, b, 0, 3 )
+{
+    uint2 gPositionFrameOffsets;
+    uint32_t gNumPrimitives;
+    uint32_t gIndexOffset;
+
+    uint32_t gAttributesOffset;
+    uint32_t gPrimitiveOffset;
+    uint32_t gMorphedPrimitiveOffset;
+};
+
+#if( !defined( __cplusplus ) )
+
+#include "MathLib/STL.hlsli"
+#include "NRD/Shaders/Include/NRD.hlsli"
 
 NRI_RESOURCE( SamplerState, gLinearMipmapLinearSampler, s, 0, 0 );
 NRI_RESOURCE( SamplerState, gLinearMipmapNearestSampler, s, 1, 0 );
-NRI_RESOURCE( SamplerState, gLinearSampler, s, 2, 0 );
-NRI_RESOURCE( SamplerState, gNearestSampler, s, 3, 0 );
+NRI_RESOURCE( SamplerState, gNearestMipmapNearestSampler, s, 2, 0 );
+
+#define gLinearSampler gLinearMipmapLinearSampler
+#define gNearestSampler gNearestMipmapNearestSampler
 
 //=============================================================================================
 // MISC
@@ -236,7 +362,7 @@ float3 GetMotion( float3 X, float3 Xprev )
         // IMPORTANT: scaling to "pixel" unit significantly improves utilization of FP16
         motion.xy = ( sampleUvPrev - sampleUv ) * gRectSize;
 
-        // IMPORTANT: 2.5D motion is preferred over 3D motion due to imprecision issues due to FP16 rounding negative effects
+        // IMPORTANT: 2.5D motion is preferred over 3D motion due to imprecision issues caused by FP16 rounding negative effects
         motion.z = viewZprev - viewZ;
     }
 
@@ -244,12 +370,12 @@ float3 GetMotion( float3 X, float3 Xprev )
 }
 
 // IMPORTANT: requires STL::Rng::Hash::Initialize
-float3 ApplyExposure( float3 Lsum, bool convertToLDR = true )
+float3 ApplyExposure( float3 Lsum, bool applyToneMap )
 {
     // Exposure
     if( gOnScreen <= SHOW_DENOISED_SPECULAR )
     {
-        Lsum *= gExposure;
+        Lsum *= gSunDirection_gExposure.w;
 
         // Dithering
         float rnd = STL::Rng::Hash::GetFloat( );
@@ -260,17 +386,13 @@ float3 ApplyExposure( float3 Lsum, bool convertToLDR = true )
     }
 
     // Tonemap
-    if( convertToLDR && gOnScreen == SHOW_FINAL )
+    if( applyToneMap && gOnScreen == SHOW_FINAL )
         Lsum = STL::Color::HdrToLinear_Uncharted( Lsum );
-
-    // Conversion
-    if( convertToLDR && ( gOnScreen == SHOW_FINAL || gOnScreen == SHOW_BASE_COLOR ) )
-        Lsum = STL::Color::LinearToSrgb( Lsum );
 
     return Lsum;
 }
 
-float3 BicubicFilterNoCorners( Texture2D<float3> tex, SamplerState samp, float2 samplePos, float2 invTextureSize, compiletime const float sharpness )
+float3 BicubicFilterNoCorners( Texture2D<float3> tex, SamplerState samp, float2 samplePos, float2 invTextureSize, float sharpness )
 {
     float2 centerPos = floor( samplePos - 0.5 ) + 0.5;
     float2 f = samplePos - centerPos;
@@ -308,6 +430,37 @@ float3 BicubicFilterNoCorners( Texture2D<float3> tex, SamplerState samp, float2 
     color *= STL::Math::PositiveRcp( sum );
 
     return color;
+}
+
+void GetCameraRay( out float3 origin, out float3 direction, float2 sampleUv )
+{
+    // https://www.slideshare.net/TiagoAlexSousa/graphics-gems-from-cryengine-3-siggraph-2013 ( slides 23+ )
+
+    // Pinhole ray
+    float3 Xv = STL::Geometry::ReconstructViewPosition( sampleUv, gCameraFrustum, gNearZ, gViewDirection_gOrthoMode.w );
+    direction = normalize( Xv );
+
+    // Distorted ray
+    float2 rnd = STL::Rng::Hash::GetFloat2( );
+    rnd = STL::ImportanceSampling::Cosine::GetRay( rnd ).xy;
+    Xv.xy += rnd * gAperture;
+
+    float3 Fv = direction * gFocalDistance; // z-plane
+    #if 0
+        Fv /= dot( vForward, direction ); // radius
+    #endif
+
+    origin = STL::Geometry::AffineTransform( gViewToWorld, Xv );
+    direction = gViewDirection_gOrthoMode.w == 0.0 ? normalize( STL::Geometry::RotateVector( gViewToWorld, Fv - Xv ) ) : -gViewDirection_gOrthoMode.xyz;
+}
+
+float GetCircleOfConfusion( float distance ) // diameter
+{
+    float F = gFocalLength; // focal lenght ( deducted from FOV )
+    float A = gAperture; // aperture diameter
+    float P = gFocalDistance; // focal distance
+
+    return gViewDirection_gOrthoMode.w == 0.0 ? abs( A * ( F * ( P - distance ) ) / ( distance * ( P - F ) ) ) : A;
 }
 
 //=============================================================================================
@@ -352,5 +505,10 @@ float3 GetSkyIntensity( float3 v, float3 sunDirection, float tanAngularRadius )
     float3 skyColor = lerp( float3( 0.2, 0.4, 0.8 ), float3( scatterColor ), atmosphere / 1.3 );
     skyColor *= saturate( 1.0 + sunDirection.z );
 
+    float ground = 0.5 + 0.5 * STL::Math::SmoothStep( -1.0, 0.0, v.z );
+    skyColor *= ground;
+
     return STL::Color::GammaToLinear( saturate( skyColor ) ) * SKY_INTENSITY + GetSunIntensity( v, sunDirection, tanAngularRadius );
 }
+
+#endif

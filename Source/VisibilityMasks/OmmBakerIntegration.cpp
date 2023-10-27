@@ -18,15 +18,15 @@ void OmmBakerGpuIntegration::Initialize(nri::Device& device)
 {
     m_Device = &device;
 
-    uint32_t nriResult = (uint32_t)nri::GetInterface(*m_Device, NRI_INTERFACE(nri::CoreInterface), (nri::CoreInterface*)&NRI);
-    nriResult |= (uint32_t)nri::GetInterface(*m_Device, NRI_INTERFACE(nri::HelperInterface), (nri::HelperInterface*)&NRI);
+    uint32_t nriResult = (uint32_t)nri::nriGetInterface(*m_Device, NRI_INTERFACE(nri::CoreInterface), (nri::CoreInterface*)&NRI);
+    nriResult |= (uint32_t)nri::nriGetInterface(*m_Device, NRI_INTERFACE(nri::HelperInterface), (nri::HelperInterface*)&NRI);
     if (nriResult != (uint32_t)nri::Result::SUCCESS)
     {
-        printf("[FAIL]: nri::GetInterface\n");
+        printf("[FAIL]: nri::nriGetInterface\n");
         std::abort();
     }
 
-    ommBakerCreationDesc bakerCreationDesc = {};
+    ommBakerCreationDesc bakerCreationDesc = ommBakerCreationDescDefault();
     bakerCreationDesc.enableValidation = true;
     bakerCreationDesc.type = ommBakerType_GPU;
     ommResult ommResult = ommCreateBaker(&bakerCreationDesc, &m_GpuBaker);
@@ -36,8 +36,9 @@ void OmmBakerGpuIntegration::Initialize(nri::Device& device)
         std::abort();
     }
 
-    ommGpuRenderAPI renderApi = NRI.GetDeviceDesc(*m_Device).graphicsAPI == nri::GraphicsAPI::VULKAN ? ommGpuRenderAPI_Vulkan : ommGpuRenderAPI_DX12;
-    ommGpuPipelineConfigDesc bakePipelineDesc = { renderApi };
+    ommGpuPipelineConfigDesc bakePipelineDesc = ommGpuPipelineConfigDescDefault();
+    bakePipelineDesc.renderAPI = NRI.GetDeviceDesc(*m_Device).graphicsAPI == nri::GraphicsAPI::VULKAN ? ommGpuRenderAPI_Vulkan : ommGpuRenderAPI_DX12;
+
     ommResult = ommGpuCreatePipeline(m_GpuBaker, &bakePipelineDesc, &m_Pipeline);
     if (ommResult != ommResult_SUCCESS)
     {
@@ -569,11 +570,11 @@ void OmmBakerGpuIntegration::GetPrebuildInfo(InputGeometryDesc* geometryDesc, ui
     for (uint32_t i = 0; i < geometryNum; ++i)
     {
         InputGeometryDesc& desc = geometryDesc[i];
-        ommGpuDispatchConfigDesc dispatchConfigDesc;
+        ommGpuDispatchConfigDesc dispatchConfigDesc = ommGpuDispatchConfigDescDefault();
 
         FillDispatchConfigDesc(dispatchConfigDesc, desc);
 
-        ommGpuPreDispatchInfo info = {};
+        ommGpuPreDispatchInfo info = ommGpuPreDispatchInfoDefault();
         ommResult ommResult = ommGpuGetPreDispatchInfo(m_Pipeline, &dispatchConfigDesc, &info);
         if (ommResult != ommResult_SUCCESS)
         {
@@ -607,7 +608,7 @@ void OmmBakerGpuIntegration::AddGeometryToQueue(InputGeometryDesc* geometryDesc,
 
         FillDispatchConfigDesc(instance.dispatchConfigDesc, *instance.desc);
 
-        ommGpuPreDispatchInfo info = {};
+        ommGpuPreDispatchInfo info = ommGpuPreDispatchInfoDefault();
         ommResult ommResult = ommGpuGetPreDispatchInfo(m_Pipeline, &instance.dispatchConfigDesc, &info);
         if (ommResult != ommResult_SUCCESS)
         {

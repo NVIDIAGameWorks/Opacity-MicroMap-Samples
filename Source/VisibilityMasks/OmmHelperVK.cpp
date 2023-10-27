@@ -256,7 +256,7 @@ namespace ommhelper
         triangles.indexType = GetVkIndexType(desc.inputs.indices.format);
         triangles.maxVertex = (uint32_t)desc.inputs.vertices.numElements;
         triangles.vertexData.deviceAddress = vertices;
-        triangles.vertexFormat = (VkFormat)nri::ConvertNRIFormatToVK(desc.inputs.vertices.format);
+        triangles.vertexFormat = (VkFormat)nri::nriConvertNRIFormatToVK(desc.inputs.vertices.format);
         triangles.vertexStride = desc.inputs.vertices.stride;
         triangles.transformData.hostAddress = nullptr;
         return geometryDesc;

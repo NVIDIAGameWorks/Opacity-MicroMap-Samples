@@ -16,17 +16,17 @@ license agreement from NVIDIA CORPORATION is strictly prohibited.
 #include <array>
 #include <map>
 
-#include "../../External/NRIFramework/External/NRI/Include/NRI.h"
-#include "../../External/NRIFramework/External/NRI/Include/Extensions/NRIDeviceCreation.h"
-#include "../../External/NRIFramework/External/NRI/Include/Extensions/NRIRayTracing.h"
-#include "../../External/NRIFramework/External/NRI/Include/Extensions/NRIHelper.h"
-#include "../../External/NRIFramework/External/NRI/Include/Extensions/NRIWrapperD3D12.h"
-#include "../../External/NRIFramework/External/NRI/Include/Extensions/NRIWrapperVK.h"
+#include "NRI.h"
+#include "Extensions/NRIDeviceCreation.h"
+#include "Extensions/NRIRayTracing.h"
+#include "Extensions/NRIHelper.h"
+#include "Extensions/NRIWrapperD3D12.h"
+#include "Extensions/NRIWrapperVK.h"
 
 #define OMM_SUPPORTS_CPP17 (1)
 #include "omm.h"
 
-#include "../../External/NVAPI/nvapi.h"
+#include "nvapi.h"
 #include "OmmBakerIntegration.h"
 
 namespace ommhelper

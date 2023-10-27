@@ -7,7 +7,8 @@ set (SHADER_OUTPUT_PATH "${CMAKE_CURRENT_SOURCE_DIR}/_Shaders")
 
 # Cached
 set(DXC_CUSTOM_PATH "custom/path/to/dxc" CACHE STRING "This DXC will be used if Vulkan SDK is not installed")
-set(GLOBAL_BIN_OUTPUT_PATH "${CMAKE_SOURCE_DIR}/_Build" CACHE STRING "")
+set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/_Bin" CACHE STRING "")
+set(CMAKE_LIBRARY_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/_Bin" CACHE STRING "")
 set(CMAKE_CONFIGURATION_TYPES "Debug;Release" CACHE STRING "")
 
 # Create project
@@ -43,7 +44,7 @@ endif()
 
 message("Packman platform: ${PACKMAN_PLATFORM}")
 
-set(NRI_DATA_VERSION 2.2)
+set(NRI_DATA_VERSION 2.3)
 
 execute_process (COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/External/Packman/packman${PACKMAN_EXT}" pull "${CMAKE_CURRENT_SOURCE_DIR}/Dependencies.xml" -p ${PACKMAN_PLATFORM} -t nri_data_version=${NRI_DATA_VERSION}
     WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
@@ -90,7 +91,7 @@ option(NRD_DISABLE_SHADER_COMPILATION "" ${DISABLE_SHADER_COMPILATION})
 add_subdirectory("External/NRD")
 
 # NVAPI
-find_library(INPUT_NVAPI_LIB NAMES nvapi64.lib PATHS "External/NVAPI/amd64")
+find_library(INPUT_NVAPI_LIB NAMES nvapi64.lib PATHS "External/NRIFramework/External/NRI/External/nvapi/amd64")
 
 # Opacity Micro-Maps
 set(OMM_PROJECT_FOLDER "Opacity Micro-Map SDK")
@@ -98,7 +99,7 @@ set(OMM_ENABLE_TESTS OFF CACHE BOOL "")
 set(OMM_ENABLE_GPU_TESTS OFF CACHE BOOL "")
 set(OMM_ENABLE_BENCHMARK OFF CACHE BOOL "")
 set(OMM_STATIC_LIBRARY OFF CACHE BOOL "")
-set(OMM_OUTPUT_BIN_PATH "${GLOBAL_BIN_OUTPUT_PATH}")
+set(OMM_OUTPUT_BIN_PATH "${CMAKE_LIBRARY_OUTPUT_DIRECTORY}")
 add_subdirectory("External/Opacity-MicroMap-SDK")
 
 # Creates a project for sample and adds dependent operations
@@ -115,7 +116,8 @@ target_include_directories(${PROJECT_NAME} PRIVATE "External/NRIFramework/Extern
 target_include_directories(${PROJECT_NAME} PRIVATE "External/NRIFramework/External")
 target_include_directories(${PROJECT_NAME} PRIVATE "External/NRD/Include" "External/NRD/Integration")
 target_include_directories(${PROJECT_NAME} PRIVATE "External/Opacity-MicroMap-SDK/omm-sdk/include")
-target_compile_definitions(${PROJECT_NAME} PRIVATE ${COMPILE_DEFINITIONS} PROJECT_NAME=${PROJECT_NAME} NRD_NORMAL_ENCODING=${NRD_NORMAL_ENCODING} NRD_ROUGHNESS_ENCODING=${NRD_ROUGHNESS_ENCODING})
+target_include_directories(${PROJECT_NAME} PRIVATE "External/NRIFramework/External/NRI/External/nvapi")
+target_compile_definitions (${PROJECT_NAME} PRIVATE ${COMPILE_DEFINITIONS} PROJECT_NAME=${PROJECT_NAME} NRD_NORMAL_ENCODING=${NRD_NORMAL_ENCODING} NRD_ROUGHNESS_ENCODING=${NRD_ROUGHNESS_ENCODING} DXC_PATH=${DXC_PATH} DXC_SPIRV_PATH=${DXC_SPIRV_PATH})
 target_compile_options(${PROJECT_NAME} PRIVATE ${COMPILE_OPTIONS})
 
 target_link_libraries(${PROJECT_NAME} PRIVATE NRIFramework NRI NRD omm-sdk)
@@ -130,7 +132,6 @@ else()
     message(WARNING "Can't find NVAPI64 DLL.")
 endif()
 
-set_target_properties(${PROJECT_NAME} PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${GLOBAL_BIN_OUTPUT_PATH}/$<CONFIG>")
 set_property(TARGET ${PROJECT_NAME} PROPERTY FOLDER "Sample")
 set_property(TARGET ${PROJECT_NAME} PROPERTY VS_DEBUGGER_WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
 set_property(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR} PROPERTY VS_STARTUP_PROJECT ${PROJECT_NAME})
@@ -176,12 +177,9 @@ endif()
 file (GLOB_RECURSE SHADERS "Shaders/*.hlsl" "Shaders/*.hlsli" "External/NRD/External/MathLib/*.hlsli")
 set_source_files_properties(${SHADERS} PROPERTIES VS_TOOL_OVERRIDE "None")
 
-if (WIN32)
-add_custom_target (${PROJECT_NAME}_Shaders ALL
-        COMMAND ShaderMake
-        --binary --flatten --stripReflection --compiler "${DXC_PATH}"
+set (SHADERMAKE_GENERAL_ARGS
+    --useAPI --binary --flatten --stripReflection --WX
         --sourceDir "Shaders"
-        -p DXIL --WX
         -c Shaders.cfg
         -o "${SHADER_OUTPUT_PATH}"
         -I "Shaders"
@@ -191,20 +189,12 @@ add_custom_target (${PROJECT_NAME}_Shaders ALL
         -D COMPILER_DXC
         -D NRD_NORMAL_ENCODING=${NRD_NORMAL_ENCODING}
         -D NRD_ROUGHNESS_ENCODING=${NRD_ROUGHNESS_ENCODING}
-        COMMAND ShaderMake
-            --binary --flatten --stripReflection --compiler "${DXC_SPIRV_PATH}"
-            --sourceDir "Shaders"
-            -p SPIRV --WX
-            -c Shaders.cfg
-            -o "${SHADER_OUTPUT_PATH}"
-            -I "Shaders"
-            -I "External"
-            -I "External/NGX"
-            -I "External/NRD/External"
-            -D COMPILER_DXC
-            -D VULKAN
-            -D NRD_NORMAL_ENCODING=${NRD_NORMAL_ENCODING}
-            -D NRD_ROUGHNESS_ENCODING=${NRD_ROUGHNESS_ENCODING}
+)
+
+if (WIN32)
+    add_custom_target (${PROJECT_NAME}_Shaders ALL
+        COMMAND ShaderMake ${SHADERMAKE_GENERAL_ARGS} -p DXIL --compiler "${DXC_PATH}"
+        COMMAND ShaderMake ${SHADERMAKE_GENERAL_ARGS} -p SPIRV --compiler "${DXC_SPIRV_PATH}" -D VULKAN --hlsl2021 --sRegShift 100 --tRegShift 200 --bRegShift 300 --uRegShift 400
         DEPENDS ShaderMake
         WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
         VERBATIM
@@ -212,20 +202,7 @@ add_custom_target (${PROJECT_NAME}_Shaders ALL
     )
 else ()
     add_custom_target (${PROJECT_NAME}_Shaders ALL
-        COMMAND ShaderMake
-        --binary --flatten --stripReflection --compiler "${DXC_SPIRV_PATH}"
-        --sourceDir "Shaders"
-        -p SPIRV --WX
-        -c Shaders.cfg
-        -o "${SHADER_OUTPUT_PATH}"
-        -I "Shaders"
-        -I "External"
-        -I "External/NGX"
-        -I "External/NRD/External"
-        -D COMPILER_DXC
-        -D VULKAN
-        -D NRD_NORMAL_ENCODING=${NRD_NORMAL_ENCODING}
-        -D NRD_ROUGHNESS_ENCODING=${NRD_ROUGHNESS_ENCODING}
+        COMMAND ShaderMake ${SHADERMAKE_GENERAL_ARGS} -p SPIRV --compiler "${DXC_SPIRV_PATH}" -D VULKAN --hlsl2021 --sRegShift 100 --tRegShift 200 --bRegShift 300 --uRegShift 400
         DEPENDS ShaderMake
     WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
     VERBATIM

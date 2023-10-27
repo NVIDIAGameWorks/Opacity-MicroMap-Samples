@@ -1,20 +1,9 @@
-#!/bin/bash
+#!/bin/sh
 
-mkdir -p "_Compiler"
+mkdir -p "_Build"
 
-cd "_Compiler"
-rm CMakeCache.txt
-cmake -DCMAKE_BUILD_TYPE=Release ..
-cmake --build . --config Release
+cd "_Build"
+cmake ..
+cmake --build . --config Release -j 4
+cmake --build . --config Debug -j 4
 cd ..
-
-read -p "Do you want to compile DEBUG configuration? [y/n]" -n 1 -r
-echo
-if [[ $REPLY =~ ^[Yy]$ ]]
-then
-    cd "_Compiler"
-    rm CMakeCache.txt
-    cmake -DCMAKE_BUILD_TYPE=Debug ..
-    cmake --build . --config Debug
-    cd ..
-fi

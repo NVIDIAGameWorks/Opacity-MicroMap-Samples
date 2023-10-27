@@ -1,19 +1,18 @@
 #!/bin/sh
 
+rm -rf "build"
+
+rm -rf "_Bin"
 rm -rf "_Build"
-rm -rf "_Compiler"
 rm -rf "_Data"
 rm -rf "_Shaders"
 rm -rf "_NRD_SDK"
 rm -rf "_NRI_SDK"
-rm -rf "_OmmCache"
-rm -rf "External/DXC"
-rm -rf "External/NRIFramework/External/Assimp"
-rm -rf "External/NRIFramework/External/Detex"
-rm -rf "External/NRIFramework/External/Glfw"
-rm -rf "External/NRIFramework/External/ImGui"
-rm -rf "External/NRIFramework/External/NRI/External/AGS"
-rm -rf "External/NRIFramework/External/NRI/External/NVAPI"
 
-rm -rf "build"
+cd "External/NRIFramework"
+source "4-Clean.sh"
+cd "../.."
 
+cd "External/NRD"
+source "4-Clean.sh"
+cd "../.."

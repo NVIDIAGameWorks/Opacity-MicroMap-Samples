@@ -117,11 +117,11 @@ namespace ommhelper
 
         D3D12_RAYTRACING_GEOMETRY_TRIANGLES_DESC& trianglesDesc = vmTriangles.triangles;
         trianglesDesc.IndexBuffer = indexData ? indexData->GetGPUVirtualAddress() + inputs.indices.offset : NULL;
-        trianglesDesc.IndexFormat = (DXGI_FORMAT)nri::ConvertNRIFormatToDXGI(inputs.indices.format);
+        trianglesDesc.IndexFormat = (DXGI_FORMAT)nri::nriConvertNRIFormatToDXGI(inputs.indices.format);
         trianglesDesc.IndexCount = (UINT)inputs.indices.numElements;
 
         trianglesDesc.VertexCount = (UINT)inputs.vertices.numElements;
-        trianglesDesc.VertexFormat = (DXGI_FORMAT)nri::ConvertNRIFormatToDXGI(inputs.vertices.format);
+        trianglesDesc.VertexFormat = (DXGI_FORMAT)nri::nriConvertNRIFormatToDXGI(inputs.vertices.format);
         trianglesDesc.VertexBuffer.StrideInBytes = inputs.vertices.stride;
         trianglesDesc.VertexBuffer.StartAddress = vertexData ? vertexData->GetGPUVirtualAddress() + inputs.vertices.offset : NULL;
 
@@ -132,7 +132,7 @@ namespace ommhelper
         size_t ommIndexOffset = inputs.buffers[(uint32_t)OmmDataLayout::Indices].offset;
         vmTriangles.ommAttachment.opacityMicromapIndexBuffer.StartAddress = ommIndexBuffer ? ommIndexBuffer->GetGPUVirtualAddress() + ommIndexOffset : NULL;
         vmTriangles.ommAttachment.opacityMicromapIndexBuffer.StrideInBytes = inputs.ommIndexStride;
-        vmTriangles.ommAttachment.opacityMicromapIndexFormat = (DXGI_FORMAT)nri::ConvertNRIFormatToDXGI(inputs.ommIndexFormat);
+        vmTriangles.ommAttachment.opacityMicromapIndexFormat = (DXGI_FORMAT)nri::nriConvertNRIFormatToDXGI(inputs.ommIndexFormat);
 
         vmTriangles.ommAttachment.numOMMUsageCounts = inputs.indexHistogramNum;
         vmTriangles.ommAttachment.pOMMUsageCounts = (NVAPI_D3D12_RAYTRACING_OPACITY_MICROMAP_USAGE_COUNT*)inputs.indexHistogram;

@@ -161,8 +161,8 @@ ProfilerContext* Profiler::BeginContext(nri::CommandBuffer* commandBuffer)
 
 void Profiler::Init(nri::Device* device)
 {
-    NRI_ABORT_ON_FAILURE(nri::GetInterface(*device, NRI_INTERFACE(nri::CoreInterface), (nri::CoreInterface*)&m_NRI));
-    NRI_ABORT_ON_FAILURE(nri::GetInterface(*device, NRI_INTERFACE(nri::HelperInterface), (nri::HelperInterface*)&m_NRI));
+    NRI_ABORT_ON_FAILURE(nri::nriGetInterface(*device, NRI_INTERFACE(nri::CoreInterface), (nri::CoreInterface*)&m_NRI));
+    NRI_ABORT_ON_FAILURE(nri::nriGetInterface(*device, NRI_INTERFACE(nri::HelperInterface), (nri::HelperInterface*)&m_NRI));
     nri::CommandQueue* commandQueue = nullptr;
     m_NRI.GetCommandQueue(*device, nri::CommandQueueType::GRAPHICS, commandQueue);
 

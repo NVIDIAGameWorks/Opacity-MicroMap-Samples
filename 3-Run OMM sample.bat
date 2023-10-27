@@ -1,20 +1,20 @@
 @echo off
 
-set DIR_BIN=%cd%\_Build\Release
+set DIR_BIN=%cd%\_Bin\Release
 
 if not exist "%DIR_BIN%" (
-    set DIR_BIN=%cd%\_Build\Debug
+    set DIR_BIN=%cd%\_Bin\Debug
 )
 
 if not exist "%DIR_BIN%" (
     echo The project is not compiled!
-    pause
     exit /b
 )
 echo Running OMM sample from '%DIR_BIN%'...
 echo.
 
 set API=D3D12
+echo.
 echo 1 - D3D12
 echo 2 - VULKAN
 :CHOOSE_API
@@ -117,33 +117,33 @@ echo 5 - quality
     goto CHOOSE_DLSS
 
 :SCENE
-set SCENE=Bistro/BistroInterior.fbx
+set SCENE=Bistro\BistroInterior.gltf
 echo.
 echo 1 - Bistro (interior)
 echo 2 - Bistro (exterior)
 echo 3 - Shader balls
-echo 4 - Zero day
+echo 4 - Kitchen
 :CHOOSE_SCENE
     set /P M=Choose scene [1-4]:
     if %M%==1 (
-        set SCENE=Bistro\BistroInterior.fbx
+        set SCENE=Bistro\BistroInterior.gltf
         goto RUN
     )
     if %M%==2 (
-        set SCENE=Bistro\BistroExterior.fbx
+        set SCENE=Bistro\BistroExterior.gltf
         goto RUN
     )
     if %M%==3 (
-        set SCENE=ShaderBalls\ShaderBalls.obj
+        set SCENE=ShaderBalls\ShaderBalls.gltf
         goto RUN
     )
     if %M%==4 (
-        set SCENE=ZeroDay\MEASURE_SEVEN/MEASURE_SEVEN.fbx
+        set SCENE=Kitchen\Kitchen.gltf
         goto RUN
     )
     goto CHOOSE_SCENE
 
 :RUN
-start "NRD sample" "%DIR_BIN%\OMMSample.exe" --width=%WIDTH% --height=%HEIGHT% --api=%API% --vsyncInterval=%VSYNC% --scene=%SCENE% --dlssQuality=%DLSS%
+start "OMM sample" "%DIR_BIN%\OMMSample.exe" --width=%WIDTH% --height=%HEIGHT% --api=%API% --vsyncInterval=%VSYNC% --scene=%SCENE% --dlssQuality=%DLSS%
 
 exit /b
